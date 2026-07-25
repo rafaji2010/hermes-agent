@@ -129,6 +129,10 @@ def _build_status() -> StatusResponse:
     called on the hot path (agent turns, streaming).
     """
     db = get_database()
+    try:
+        db.get_connection()
+    except Exception:
+        _log.exception("Failed to initialize database for status check")
     db_connected = db.is_initialised
     db_path = _display_path(str(db.db_path))
 
