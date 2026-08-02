@@ -11,7 +11,7 @@ import logging
 import os
 import subprocess
 from pathlib import Path
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from ..models import (
     DuplicateRepositoryError,
@@ -26,6 +26,11 @@ from ..models import (
 )
 from ..storage import AbstractStorage
 
+if TYPE_CHECKING:
+    from ..security.authorization import AuthorizationMiddleware
+    from ..security.resource_limits import ResourceLimiter
+    from ..security.sandbox import PathSandbox
+
 _log = logging.getLogger("hermes.plugins.workspace.service")
 
 
@@ -36,8 +41,17 @@ class WorkspaceService:
     delegates persistence to the injected ``AbstractStorage`` backend.
     """
 
-    def __init__(self, storage: AbstractStorage):
+    def __init__(
+        self,
+        storage: AbstractStorage,
+        authz: "AuthorizationMiddleware | None" = None,
+        limits: "ResourceLimiter | None" = None,
+        sandbox: "PathSandbox | None" = None,
+    ):
         self._storage = storage
+        self._authz = authz
+        self._limits = limits
+        self._sandbox = sandbox
 
     # ------------------------------------------------------------------
     # Workspaces
@@ -49,8 +63,23 @@ class WorkspaceService:
         if not name:
             raise InvalidPathError("", "Workspace name must not be empty.")
 
+        if self._limits:
+            result = self._limits.check_title_length(name, "workspace name")
+            if not result.allowed:
+                self._audit_violation("resource_limit", result.reason)
+                from ..security.resource_limits import ResourceLimitExceeded
+                raise ResourceLimitExceeded(result.resource, result.limit, result.actual)
+
+        if self._authz:
+            self._authz.guard("workspace.create", resource_type="workspace")
+
         path = payload.path.strip()
         if path:
+            if self._sandbox:
+                pv = self._sandbox.validate_path(path, operation="read")
+                if not pv.is_allowed:
+                    self._audit_violation("sandbox", pv.reason)
+                    raise InvalidPathError(path, pv.reason)
             self._validate_directory(Path(path), "Workspace root path")
 
         with self._storage.transaction():
@@ -68,20 +97,59 @@ class WorkspaceService:
         return ws
 
     # ------------------------------------------------------------------
+    # Hermes Project mapping
+    # ------------------------------------------------------------------
+    #
+    # Passthroughs to the storage layer.  Authorization for these
+    # operations (``workspace.scope.link`` / ``workspace.scope.read``)
+    # happens at the API layer where the request context is known.
+
+    def link_project(self, workspace_id: str, project_id: str) -> Workspace:
+        """Map a workspace to a Hermes Project."""
+        return self._storage.link_project(workspace_id, project_id)
+
+    def unlink_project(self, workspace_id: str) -> Workspace:
+        """Clear the Hermes Project mapping for a workspace."""
+        return self._storage.unlink_project(workspace_id)
+
+    def get_project_link(self, workspace_id: str) -> Optional[str]:
+        """Return the mapped Hermes project id (or ``None``)."""
+        return self._storage.get_project_link(workspace_id)
+
+    def get_workspace_by_project_id(self, project_id: str) -> Optional[Workspace]:
+        """Return the single workspace mapped to a project, if any."""
+        return self._storage.get_workspace_by_project_id(project_id)
+
+    def list_workspaces_by_project_id(self, project_id: str) -> List[Workspace]:
+        """Return all workspaces mapped to a project."""
+        return self._storage.list_workspaces_by_project_id(project_id)
+
+    # ------------------------------------------------------------------
     # Repositories
     # ------------------------------------------------------------------
 
     def register_repository(self, payload: RepositoryRegister) -> Repository:
         """Register a repository after validation and git-root detection."""
+        if self._authz:
+            self._authz.guard("repository.register",
+                              resource_type="repository",
+                              resource_id=payload.workspace_id)
+
+        name = payload.name.strip()
+        if not name:
+            raise InvalidPathError("", "Repository name must not be empty.")
+
+        if self._limits:
+            result = self._limits.check_title_length(name, "repository name")
+            if not result.allowed:
+                self._audit_violation("resource_limit", result.reason)
+                from ..security.resource_limits import ResourceLimitExceeded
+                raise ResourceLimitExceeded(result.resource, result.limit, result.actual)
+
         # --- validate workspace exists ---
         ws = self._storage.get_workspace(payload.workspace_id)
         if ws is None:
             raise WorkspaceNotFoundError(payload.workspace_id)
-
-        # --- validate name ---
-        name = payload.name.strip()
-        if not name:
-            raise InvalidPathError("", "Repository name must not be empty.")
 
         # --- validate / resolve path ---
         repo_path = payload.path.strip()
@@ -89,14 +157,27 @@ class WorkspaceService:
             raise InvalidPathError("", "Repository path is required.")
 
         resolved = Path(repo_path).resolve()
+
+        if self._sandbox:
+            pv = self._sandbox.validate_path(str(resolved), operation="read")
+            if not pv.is_allowed:
+                self._audit_violation("sandbox", pv.reason)
+                raise InvalidPathError(str(resolved), pv.reason)
+
         self._validate_directory(resolved, "Repository path")
 
         # --- validate git ---
         git_root = payload.git_root
         if git_root:
-            git_root = str(Path(git_root).resolve())
-            self._validate_directory(Path(git_root), "Git root")
-            self._validate_git_repo(Path(git_root))
+            git_root_path = Path(git_root).resolve()
+            if self._sandbox:
+                pv = self._sandbox.validate_path(str(git_root_path), operation="read")
+                if not pv.is_allowed:
+                    self._audit_violation("sandbox", pv.reason)
+                    raise InvalidPathError(str(git_root_path), pv.reason)
+            self._validate_directory(git_root_path, "Git root")
+            self._validate_git_repo(git_root_path)
+            git_root = str(git_root_path)
         else:
             git_root = self._detect_git_root(resolved)
             if git_root is None:
@@ -133,6 +214,15 @@ class WorkspaceService:
     # ------------------------------------------------------------------
     # Validation helpers
     # ------------------------------------------------------------------
+
+    def _audit_violation(self, category: str, reason: str) -> None:
+        """Log a security violation audit event."""
+        if self._authz:
+            self._authz.audit.log(
+                action=f"s6.4.violation.{category}",
+                status="DENY",
+                details={"category": category, "reason": reason},
+            )
 
     @staticmethod
     def _validate_directory(p: Path, label: str) -> None:

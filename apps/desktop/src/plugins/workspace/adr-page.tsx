@@ -28,17 +28,24 @@ import {
   $adrCategories,
   $adrEditorOpen,
   $adrEditingId,
+  adrReconcileLabel,
+  adrReconcileSummaryMessage,
+  adrReconcileTone,
   type ADR,
   type ADRStatus,
+  type ADRReconcileSummary,
 } from './stores/adrs'
 import {
   fetchADRs,
   createADR as apiCreate,
   updateADR as apiUpdate,
   deleteADR as apiDelete,
+  reconcileADRs,
 } from './lib/adr-api'
 import { ADREditor } from './adr-editor'
 import { ADRDetail } from './adr-detail'
+import { WorkspaceScopeNotice } from './scope-notice'
+import { scopeReady, useWorkspaceScope } from './stores/scope'
 
 // ---------------------------------------------------------------------------
 // Titlebar
@@ -111,7 +118,19 @@ function ADRRow({
             {adr.slug}
           </div>
         </div>
-        <StatusBadge status={adr.status} />
+        <div className="flex shrink-0 items-center gap-1">
+          {/* S7.3A — reconciliation state badge */}
+          <span
+            className={cn(
+              'inline-flex items-center rounded-full border px-1.5 py-px text-[10px] font-medium',
+              adrReconcileTone(adr.reconcile_state),
+            )}
+            title={adr.last_error || adr.reconcile_state}
+          >
+            {adrReconcileLabel(adr.reconcile_state)}
+          </span>
+          <StatusBadge status={adr.status} />
+        </div>
       </div>
       {adr.tags.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1">
@@ -213,6 +232,10 @@ interface ADRPageProps {
 
 export function ADRPage({ ctx, workspaceId }: ADRPageProps) {
   const queryClient = useQueryClient()
+  const scope = useWorkspaceScope(ctx)
+  // The resolved project scope is authoritative; the prop remains a
+  // manual override for tooling/debug use.
+  const ws = scopeReady(scope) ? scope.workspaceId : workspaceId
   const searchQuery = useStore($adrSearchQuery)
   const statusFilter = useStore($adrStatusFilter)
   const categoryFilter = useStore($adrCategoryFilter)
@@ -221,16 +244,20 @@ export function ADRPage({ ctx, workspaceId }: ADRPageProps) {
   const editingId = useStore($adrEditingId)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
+  const [reconciling, setReconciling] = useState(false)
+  const [reconcileMsg, setReconcileMsg] = useState('')
 
-  // Fetch ADRs
+  // Fetch ADRs — gated on the scope so an unresolvable scope never
+  // triggers an unscoped (global) query.
   const adrsQuery = useQuery({
-    queryKey: ['workspace', 'adrs', workspaceId, searchQuery, statusFilter, categoryFilter, tagFilter],
-    queryFn: () => fetchADRs(ctx, workspaceId, {
+    queryKey: ['workspace', 'adrs', ws, searchQuery, statusFilter, categoryFilter, tagFilter],
+    queryFn: () => fetchADRs(ctx, ws, {
       q: searchQuery || undefined,
       status: statusFilter || undefined,
       category: categoryFilter || undefined,
       tag: tagFilter || undefined,
     }),
+    enabled: Boolean(ws),
     staleTime: 10_000,
   })
 
@@ -241,12 +268,34 @@ export function ADRPage({ ctx, workspaceId }: ADRPageProps) {
   // Selected ADR
   const selectedADR = adrs.find(a => a.id === selectedId) ?? null
 
+  const handleReconcile = useCallback(async () => {
+    if (!ws) return
+    setReconciling(true)
+    setReconcileMsg('')
+    try {
+      // Inspection-first: preview, then apply.
+      await reconcileADRs(ctx, ws, true)
+      const summary: ADRReconcileSummary = await reconcileADRs(ctx, ws, false)
+      setReconcileMsg(`Reconciled: ${adrReconcileSummaryMessage(summary)}`)
+      queryClient.invalidateQueries({ queryKey: ['workspace', 'adrs'] })
+    } catch (err) {
+      setReconcileMsg(err instanceof Error ? err.message : 'Reconciliation failed.')
+    } finally {
+      setReconciling(false)
+    }
+  }, [ctx, ws, queryClient])
+
   const handleDelete = useCallback(async () => {
     if (!deleteConfirmId) return
-    await apiDelete(ctx, deleteConfirmId)
-    setDeleteConfirmId(null)
-    if (selectedId === deleteConfirmId) setSelectedId(null)
-    queryClient.invalidateQueries({ queryKey: ['workspace', 'adrs'] })
+    try {
+      await apiDelete(ctx, deleteConfirmId)
+      setDeleteConfirmId(null)
+      if (selectedId === deleteConfirmId) setSelectedId(null)
+      queryClient.invalidateQueries({ queryKey: ['workspace', 'adrs'] })
+    } catch (err) {
+      setReconcileMsg(err instanceof Error ? err.message : 'Delete failed.')
+      setDeleteConfirmId(null)
+    }
   }, [ctx, deleteConfirmId, queryClient, selectedId])
 
   const handleSaved = useCallback(() => {
@@ -261,16 +310,33 @@ export function ADRPage({ ctx, workspaceId }: ADRPageProps) {
         <ADRTitlebar />
       </Contribute>
 
+      <WorkspaceScopeNotice ctx={ctx} scope={scope} />
+
       {/* Header bar */}
       <div className="flex items-center justify-between border-b border-(--ui-stroke-tertiary) px-6 py-2.5">
-        <FilterBar tags={tags} categories={categories} workspaceId={workspaceId} />
-        <Button
-          onClick={() => { $adrEditingId.set(null); $adrEditorOpen.set(true) }}
-          size="xs"
-          variant="default"
-        >
-          New ADR
-        </Button>
+        <FilterBar tags={tags} categories={categories} workspaceId={ws} />
+        <div className="flex items-center gap-2">
+          {reconcileMsg && (
+            <span className="max-w-[240px] truncate text-[11px] text-(--ui-text-tertiary)">
+              {reconcileMsg}
+            </span>
+          )}
+          <Button
+            disabled={reconciling || !ws}
+            onClick={() => void handleReconcile()}
+            size="xs"
+            variant="secondary"
+          >
+            {reconciling ? 'Reconciling…' : 'Reconcile'}
+          </Button>
+          <Button
+            onClick={() => { $adrEditingId.set(null); $adrEditorOpen.set(true) }}
+            size="xs"
+            variant="default"
+          >
+            New ADR
+          </Button>
+        </div>
       </div>
 
       {/* Body */}
@@ -304,11 +370,14 @@ export function ADRPage({ ctx, workspaceId }: ADRPageProps) {
           {selectedADR ? (
             <ADRDetail
               adr={selectedADR}
+              ctx={ctx}
+              workspaceId={ws}
               onDelete={() => setDeleteConfirmId(selectedADR.id)}
               onEdit={() => {
                 $adrEditingId.set(selectedADR.id)
                 $adrEditorOpen.set(true)
               }}
+              onChanged={() => queryClient.invalidateQueries({ queryKey: ['workspace', 'adrs'] })}
             />
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-(--ui-text-tertiary)">
@@ -325,7 +394,7 @@ export function ADRPage({ ctx, workspaceId }: ADRPageProps) {
           ctx={ctx}
           onClose={() => { $adrEditorOpen.set(false); $adrEditingId.set(null) }}
           onSaved={handleSaved}
-          workspaceId={workspaceId}
+          workspaceId={ws}
         />
       )}
 

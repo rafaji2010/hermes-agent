@@ -35,6 +35,16 @@ interface StatusResponse {
   workspace_count: number
   repository_count: number
   journal_count: number
+  roadmap_count: number
+  milestone_count: number
+  completed_milestone_count: number
+  task_count: number
+  open_task_count: number
+  blocked_task_count: number
+  overdue_task_count: number
+  graph_entity_count: number
+  graph_edge_count: number
+  graph_orphan_count: number
   hermes_home: string
 }
 
@@ -229,14 +239,30 @@ export function WorkspacePage({ ctx }: WorkspacePageProps) {
         </div>
 
         {/* ── Top-line metrics ───────────────────────────────── */}
-        <div className="grid grid-cols-4 gap-4 px-8 pt-6">
-          <TopIndicator label="Workspaces" value={String(data.workspace_count)} />
-          <TopIndicator label="Repositories" value={String(data.repository_count)} />
-          <TopIndicator label="Journal Entries" value={String(data.journal_count)} />
-          <TopIndicator
-            label="Database"
-            value={data.database_connected ? 'Connected' : 'Disconnected'}
-          />
+        <div className="space-y-4 px-8 pt-6">
+          <div className="grid grid-cols-5 gap-4">
+            <TopIndicator label="Workspaces" value={String(data.workspace_count)} />
+            <TopIndicator label="Repositories" value={String(data.repository_count)} />
+            <TopIndicator label="Journal" value={String(data.journal_count)} />
+            <TopIndicator label="Roadmaps" value={String(data.roadmap_count)} />
+            <TopIndicator label="Milestones" value={String(data.milestone_count)} />
+          </div>
+          <div className="grid grid-cols-5 gap-4">
+            <TopIndicator label="Tasks" value={String(data.task_count)} />
+            <TopIndicator label="Open Tasks" value={String(data.open_task_count)} />
+            <TopIndicator label="Blocked" value={String(data.blocked_task_count)} />
+            <TopIndicator label="Overdue" value={String(data.overdue_task_count)} />
+            <TopIndicator
+              label="Database"
+              value={data.database_connected ? 'Connected' : 'Disconnected'}
+            />
+          </div>
+          <div className="grid grid-cols-4 gap-4">
+            <TopIndicator label="Graph Entities" value={String(data.graph_entity_count)} />
+            <TopIndicator label="Graph Edges" value={String(data.graph_edge_count)} />
+            <TopIndicator label="Orphans" value={String(data.graph_orphan_count)} />
+            <TopIndicator label="Completed" value={String(data.completed_milestone_count)} />
+          </div>
         </div>
 
         {/* ── Card grid ──────────────────────────────────────── */}

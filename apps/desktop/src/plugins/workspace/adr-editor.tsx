@@ -13,7 +13,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { Separator } from '@/components/ui/separator'
 
 import type { ADR } from './stores/adrs'
-import { createADR, updateADR } from './lib/adr-api'
+import { isCanonicalADR } from './stores/adrs'
+import { createADR, updateADR, updateADRFile } from './lib/adr-api'
 
 interface ADREditorProps {
   adr: ADR | null
@@ -33,6 +34,7 @@ export function ADREditor({ adr, ctx, onClose, onSaved, workspaceId }: ADREditor
   const [error, setError] = useState<string | null>(null)
 
   const isEditing = adr !== null
+  const canonical = isEditing && isCanonicalADR(adr!)
 
   const handleSave = useCallback(async () => {
     if (!title.trim()) {
@@ -47,7 +49,13 @@ export function ADREditor({ adr, ctx, onClose, onSaved, workspaceId }: ADREditor
         .map(t => t.trim().toLowerCase())
         .filter(Boolean)
 
-      if (isEditing) {
+      if (isEditing && canonical) {
+        // S7.3A: canonical ADRs are edited through the FILE — the markdown
+        // body (including its frontmatter) is written atomically to the
+        // canonical file, then the projection refreshes.  The form's
+        // title/status/category fields apply to the file's frontmatter.
+        await updateADRFile(ctx, adr!.id, markdown, workspaceId)
+      } else if (isEditing) {
         await updateADR(ctx, adr!.id, {
           title: title.trim(),
           status,
@@ -71,7 +79,7 @@ export function ADREditor({ adr, ctx, onClose, onSaved, workspaceId }: ADREditor
     } finally {
       setSaving(false)
     }
-  }, [title, status, category, markdown, tagsInput, isEditing, adr, ctx, workspaceId, onSaved])
+  }, [title, status, category, markdown, tagsInput, isEditing, canonical, adr, ctx, workspaceId, onSaved])
 
   return (
     <Dialog onOpenChange={onClose} open>
@@ -79,6 +87,14 @@ export function ADREditor({ adr, ctx, onClose, onSaved, workspaceId }: ADREditor
         <DialogHeader>
           <DialogTitle>{isEditing ? 'Edit ADR' : 'New ADR'}</DialogTitle>
         </DialogHeader>
+
+        {canonical && (
+          <div className="rounded-md border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-xs text-blue-400">
+            Canonical ADR — the markdown body (including its frontmatter) is
+            saved to the repository file. Title/status/category edits apply
+            to the file's frontmatter.
+          </div>
+        )}
 
         <div className="space-y-4">
           <div>

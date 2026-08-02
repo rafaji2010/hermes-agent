@@ -9,8 +9,10 @@ import type { PluginContext } from '@/contrib/plugin'
 import type {
   ADR,
   ADRCreatePayload,
-  ADRListResponse,
   ADRUpdatePayload,
+  ADRReconcileStatus,
+  ADRReconcileSummary,
+  ADRMaterializeResult,
 } from '../stores/adrs'
 
 export interface ADRListResponse {
@@ -68,6 +70,61 @@ export async function deleteADR(
   adrId: string,
 ): Promise<void> {
   await ctx.rest(`/v1/adrs/${encodeURIComponent(adrId)}`, { method: 'DELETE' })
+}
+
+// ---------------------------------------------------------------------------
+// S7.3A — canonical ADR reconciliation
+// ---------------------------------------------------------------------------
+
+export async function reconcileADRs(
+  ctx: PluginContext,
+  workspaceId: string,
+  dryRun = false,
+): Promise<ADRReconcileSummary> {
+  return ctx.rest<ADRReconcileSummary>('/v1/adrs/reconcile', {
+    method: 'POST',
+    body: { workspace_id: workspaceId, dry_run: dryRun },
+  })
+}
+
+export async function fetchReconcileStatus(
+  ctx: PluginContext,
+  workspaceId: string,
+): Promise<ADRReconcileStatus[]> {
+  const resp = await ctx.rest<{ statuses: ADRReconcileStatus[] }>(
+    `/v1/adrs/reconcile/status?workspace_id=${encodeURIComponent(workspaceId)}`,
+  )
+  return resp.statuses
+}
+
+export async function materializeADR(
+  ctx: PluginContext,
+  adrId: string,
+  dryRun: boolean,
+  workspaceId: string,
+): Promise<ADRMaterializeResult> {
+  return ctx.rest<ADRMaterializeResult>(
+    `/v1/adrs/${encodeURIComponent(adrId)}/materialize?workspace_id=${encodeURIComponent(workspaceId)}`,
+    {
+      method: 'POST',
+      body: { dry_run: dryRun },
+    },
+  )
+}
+
+export async function updateADRFile(
+  ctx: PluginContext,
+  adrId: string,
+  markdown: string,
+  workspaceId: string,
+): Promise<ADRMaterializeResult> {
+  return ctx.rest<ADRMaterializeResult>(
+    `/v1/adrs/${encodeURIComponent(adrId)}/file?workspace_id=${encodeURIComponent(workspaceId)}`,
+    {
+      method: 'PUT',
+      body: { markdown, dry_run: false },
+    },
+  )
 }
 
 export async function fetchADRTags(

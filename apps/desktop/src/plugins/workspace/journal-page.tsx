@@ -25,6 +25,8 @@ import {
   updateJournalEntry as apiUpdate, deleteJournalEntry as apiDelete,
 } from './lib/journal-api'
 import { JournalEditor } from './journal-editor'
+import { WorkspaceScopeNotice } from './scope-notice'
+import { scopeReady, useWorkspaceScope } from './stores/scope'
 
 function JournalTitlebar() {
   return (
@@ -69,6 +71,8 @@ interface JournalPageProps { ctx: PluginContext; workspaceId: string }
 
 export function JournalPage({ ctx, workspaceId }: JournalPageProps) {
   const queryClient = useQueryClient()
+  const scope = useWorkspaceScope(ctx)
+  const ws = scopeReady(scope) ? scope.workspaceId : workspaceId
   const searchQuery = useStore($journalSearchQuery)
   const tagFilter = useStore($journalTagFilter)
   const dateFilter = useStore($journalDateFilter)
@@ -78,8 +82,9 @@ export function JournalPage({ ctx, workspaceId }: JournalPageProps) {
   const [deleteId, setDeleteId] = useState<string | null>(null)
 
   const q = useQuery({
-    queryKey: ['workspace', 'journal', workspaceId, searchQuery, tagFilter, dateFilter],
-    queryFn: () => fetchJournalEntries(ctx, workspaceId, { q: searchQuery || undefined, tag: tagFilter || undefined, date: dateFilter || undefined }),
+    queryKey: ['workspace', 'journal', ws, searchQuery, tagFilter, dateFilter],
+    queryFn: () => fetchJournalEntries(ctx, ws, { q: searchQuery || undefined, tag: tagFilter || undefined, date: dateFilter || undefined }),
+    enabled: Boolean(ws),
     staleTime: 10_000,
   })
   const entries = q.data?.entries ?? []
@@ -102,6 +107,8 @@ export function JournalPage({ ctx, workspaceId }: JournalPageProps) {
   return (
     <div className="flex h-full flex-col">
       <Contribute area="titleBar.center" id="workspace:journal:titlebar"><JournalTitlebar /></Contribute>
+
+      <WorkspaceScopeNotice ctx={ctx} scope={scope} />
 
       <div className="flex items-center justify-between border-b border-(--ui-stroke-tertiary) px-6 py-2.5">
         <div className="flex flex-wrap items-center gap-2">
@@ -157,7 +164,7 @@ export function JournalPage({ ctx, workspaceId }: JournalPageProps) {
       {editorOpen && (
         <JournalEditor
           entry={editingId ? entries.find(e => e.id === editingId) ?? null : null}
-          ctx={ctx} workspaceId={workspaceId}
+          ctx={ctx} workspaceId={ws}
           onClose={() => { $journalEditorOpen.set(false); $journalEditingId.set(null) }}
           onSaved={handleSaved}
         />

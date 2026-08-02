@@ -2,11 +2,19 @@
  * ADR Detail — read-only view of a single ADR with markdown body.
  */
 
+import { useCallback, useState } from 'react'
+
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { cn } from '@/lib/utils'
 
-import type { ADR } from './stores/adrs'
+import { materializeADR } from './lib/adr-api'
+import {
+  adrReconcileLabel,
+  adrReconcileTone,
+  isLegacyADR,
+  type ADR,
+} from './stores/adrs'
 
 const STATUS_COLORS: Record<string, string> = {
   proposed: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20',
@@ -18,13 +26,47 @@ const STATUS_COLORS: Record<string, string> = {
 
 export function ADRDetail({
   adr,
+  ctx,
+  workspaceId,
   onDelete,
   onEdit,
+  onChanged,
 }: {
   adr: ADR
+  ctx: import('@/contrib/plugin').PluginContext
+  workspaceId: string
   onDelete: () => void
   onEdit: () => void
+  onChanged: () => void
 }) {
+  const [materializing, setMaterializing] = useState(false)
+  const [materializeMsg, setMaterializeMsg] = useState('')
+  const legacy = isLegacyADR(adr)
+
+  const handleMaterialize = useCallback(async () => {
+    setMaterializing(true)
+    setMaterializeMsg('')
+    try {
+      // Inspection-first: preview what would be written.
+      const preview = await materializeADR(ctx, adr.id, true, workspaceId)
+      if (preview.status === 'preview') {
+        setMaterializeMsg(`Preview: would write ${preview.target_path}.`)
+      }
+      // Explicit apply.
+      const result = await materializeADR(ctx, adr.id, false, workspaceId)
+      if (result.status === 'materialized') {
+        setMaterializeMsg(`Materialized to ${result.target_path}.`)
+        onChanged()
+      } else {
+        setMaterializeMsg(result.message || `Materialization: ${result.status}`)
+      }
+    } catch (err) {
+      setMaterializeMsg(err instanceof Error ? err.message : 'Materialization failed.')
+    } finally {
+      setMaterializing(false)
+    }
+  }, [ctx, adr.id, workspaceId, onChanged])
+
   return (
     <div className="mx-auto max-w-3xl px-6 py-6">
       {/* Header */}
@@ -40,6 +82,21 @@ export function ADRDetail({
                 <span>·</span>
                 <span>{adr.category}</span>
               </>
+            )}
+            {/* S7.3A — reconciliation state */}
+            <span
+              className={cn(
+                'inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium',
+                adrReconcileTone(adr.reconcile_state),
+              )}
+              title={adr.last_error || adr.reconcile_state}
+            >
+              {adrReconcileLabel(adr.reconcile_state)}
+            </span>
+            {adr.source === 'git_file' && adr.canonical_path && (
+              <span className="font-mono text-[10px] text-(--ui-text-tertiary)">
+                {adr.canonical_path}
+              </span>
             )}
           </div>
         </div>
@@ -60,6 +117,28 @@ export function ADRDetail({
           </Button>
         </div>
       </div>
+
+      {/* S7.3A — legacy ADR materialization */}
+      {legacy && (
+        <div className="mb-4 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quaternary) px-3 py-2 text-xs">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-(--ui-text-secondary)">
+              Legacy DB-only ADR — the canonical file does not exist yet.
+            </span>
+            <Button
+              disabled={materializing}
+              onClick={() => void handleMaterialize()}
+              size="xs"
+              variant="secondary"
+            >
+              {materializing ? 'Materializing…' : 'Materialize to file'}
+            </Button>
+          </div>
+          {materializeMsg && (
+            <div className="mt-1 text-(--ui-text-tertiary)">{materializeMsg}</div>
+          )}
+        </div>
+      )}
 
       {/* Tags */}
       {adr.tags.length > 0 && (

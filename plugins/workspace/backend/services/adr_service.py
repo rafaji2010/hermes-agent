@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from ..models import (
     ADR,
@@ -21,6 +21,10 @@ from ..models import (
     WorkspaceNotFoundError,
 )
 from ..storage import AbstractStorage
+
+if TYPE_CHECKING:
+    from ..security.authorization import AuthorizationMiddleware
+    from ..security.resource_limits import ResourceLimiter
 
 _log = logging.getLogger("hermes.plugins.workspace.adr_service")
 
@@ -49,8 +53,15 @@ def _unique_slug(storage: AbstractStorage, workspace_id: str, base: str) -> str:
 class ADRService:
     """Business logic for ADR management."""
 
-    def __init__(self, storage: AbstractStorage):
+    def __init__(
+        self,
+        storage: AbstractStorage,
+        authz: "AuthorizationMiddleware | None" = None,
+        limits: "ResourceLimiter | None" = None,
+    ):
         self._storage = storage
+        self._authz = authz
+        self._limits = limits
 
     # ------------------------------------------------------------------
     # CRUD
@@ -60,6 +71,10 @@ class ADRService:
         title = payload.title.strip()
         if not title:
             raise ADRError("Title must not be empty.", code="EMPTY_TITLE")
+
+        if self._authz:
+            self._authz.guard("adr.create", resource_type="adr",
+                              resource_id=payload.workspace_id)
 
         status = (payload.status or "proposed").strip().lower()
         if status not in VALID_ADR_STATUSES:
@@ -73,6 +88,12 @@ class ADRService:
         slug = _unique_slug(self._storage, payload.workspace_id, base_slug)
 
         tags = [t.strip().lower() for t in (payload.tags or []) if t.strip()]
+
+        if self._limits:
+            self._check_limit(self._limits.check_title_length(title))
+            self._check_limit(self._limits.check_tag_count(tags))
+            if payload.markdown:
+                self._check_limit(self._limits.check_markdown_size(payload.markdown))
 
         with self._storage.transaction():
             return self._storage.create_adr(
@@ -90,6 +111,18 @@ class ADRService:
         existing = self._storage.get_adr(adr_id)
         if existing is None:
             raise ADRNotFoundError(adr_id)
+
+        # S7.3A: the canonical file is the authority for content/metadata of
+        # git_file ADRs.  Edits must go through the file endpoint so the
+        # projection never silently diverges from the file.
+        if existing.source == "git_file":
+            from ..models import ADRCanonicalUpdateError
+
+            raise ADRCanonicalUpdateError(adr_id)
+
+        if self._authz:
+            self._authz.guard("adr.update", resource_type="adr",
+                              resource_id=adr_id)
 
         status = payload.status
         if status is not None:
@@ -110,6 +143,14 @@ class ADRService:
         if payload.tags is not None:
             tags = [t.strip().lower() for t in payload.tags if t.strip()]
 
+        if self._limits:
+            if title is not None:
+                self._check_limit(self._limits.check_title_length(title))
+            if tags is not None:
+                self._check_limit(self._limits.check_tag_count(tags))
+            if payload.markdown is not None:
+                self._check_limit(self._limits.check_markdown_size(payload.markdown))
+
         with self._storage.transaction():
             return self._storage.update_adr(
                 adr_id=adr_id,
@@ -122,6 +163,20 @@ class ADRService:
             )
 
     def delete_adr(self, adr_id: str) -> None:
+        existing = self._storage.get_adr(adr_id)
+        if existing is None:
+            raise ADRNotFoundError(adr_id)
+
+        # S7.3A: never silently delete a canonical file's projection — the
+        # file stays authoritative.  Delete the file in git, then reconcile.
+        if existing.source == "git_file":
+            from ..models import ADRCanonicalDeleteError
+
+            raise ADRCanonicalDeleteError(adr_id)
+
+        if self._authz:
+            self._authz.guard("adr.delete", resource_type="adr",
+                              resource_id=adr_id)
         with self._storage.transaction():
             self._storage.delete_adr(adr_id)
 
@@ -156,3 +211,18 @@ class ADRService:
 
     def get_categories(self, workspace_id: str) -> List[str]:
         return self._storage.get_distinct_categories(workspace_id)
+
+    # ------------------------------------------------------------------
+    # Security helpers
+    # ------------------------------------------------------------------
+
+    def _check_limit(self, result) -> None:
+        if not result.allowed:
+            from ..security.resource_limits import ResourceLimitExceeded
+            if self._authz:
+                self._authz.audit.log(
+                    action="s6.4.violation.resource_limit",
+                    status="DENY",
+                    details={"resource": result.resource, "reason": result.reason},
+                )
+            raise ResourceLimitExceeded(result.resource, result.limit, result.actual)

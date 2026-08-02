@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Generator, List, Optional
 
 if TYPE_CHECKING:
-    from ..models import ADR, JournalEntry, Repository, Workspace
+    from ..models import ADR, JournalEntry, Repository, Roadmap, RoadmapMilestone, Task, TaskComment, TaskStats, Workspace
 
 
 class AbstractStorage(ABC):
@@ -97,6 +97,36 @@ class AbstractStorage(ABC):
     @abstractmethod
     def get_workspace_by_name(self, name: str) -> Optional[Workspace]:
         """Return a workspace by its unique name or ``None``."""
+        ...
+
+    @abstractmethod
+    def link_project(self, workspace_id: str, project_id: str) -> Workspace:
+        """Map a workspace to a Hermes Project.
+
+        Raises ``WorkspaceNotFoundError`` when the workspace is missing
+        and ``DuplicateProjectMappingError`` when the project is already
+        mapped to a different workspace.
+        """
+        ...
+
+    @abstractmethod
+    def unlink_project(self, workspace_id: str) -> Workspace:
+        """Clear the Hermes Project mapping for a workspace."""
+        ...
+
+    @abstractmethod
+    def get_project_link(self, workspace_id: str) -> Optional[str]:
+        """Return the mapped Hermes project id (or ``None``)."""
+        ...
+
+    @abstractmethod
+    def get_workspace_by_project_id(self, project_id: str) -> Optional[Workspace]:
+        """Return the single workspace mapped to a project, if any."""
+        ...
+
+    @abstractmethod
+    def list_workspaces_by_project_id(self, project_id: str) -> List[Workspace]:
+        """Return all workspaces mapped to a project (should be ≤ 1)."""
         ...
 
     # ------------------------------------------------------------------
@@ -214,6 +244,35 @@ class AbstractStorage(ABC):
         ...
 
     @abstractmethod
+    def find_adr_by_canonical_path(
+        self, workspace_id: str, canonical_path: str
+    ) -> Optional[ADR]:
+        """Return the ADR whose projection points at a canonical file path.
+
+        Canonical paths are project-relative (e.g. ``docs/adr/0001-x.md``).
+        """
+        ...
+
+    @abstractmethod
+    def update_adr_reconcile_meta(
+        self,
+        adr_id: str,
+        *,
+        canonical_path: Optional[str] = None,
+        content_hash: Optional[str] = None,
+        reconcile_state: Optional[str] = None,
+        source: Optional[str] = None,
+        last_indexed: Optional[str] = None,
+        last_error: Optional[str] = None,
+    ) -> ADR:
+        """Update the reconciliation projection fields of an ADR.
+
+        Fields left ``None`` are unchanged.  Never touches the canonical
+        file — this is a DB-projection-only update.
+        """
+        ...
+
+    @abstractmethod
     def get_distinct_categories(self, workspace_id: str) -> List[str]:
         """Return all distinct categories used in a workspace."""
         ...
@@ -283,3 +342,162 @@ class AbstractStorage(ABC):
     @abstractmethod
     def get_distinct_categories(self, workspace_id: str) -> List[str]:
         """Return all distinct categories used in a workspace."""
+
+
+    # ------------------------------------------------------------------
+    # Roadmaps
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def create_roadmap(self, workspace_id: str, name: str, description: str) -> Roadmap:
+        """Create a roadmap within a workspace."""
+        ...
+
+    @abstractmethod
+    def update_roadmap(self, roadmap_id: str, *, name: Optional[str] = None, description: Optional[str] = None) -> Roadmap:
+        """Update a roadmap. Fields left ``None`` are unchanged."""
+        ...
+
+    @abstractmethod
+    def delete_roadmap(self, roadmap_id: str) -> None:
+        """Delete a roadmap and all its milestones (cascaded)."""
+        ...
+
+    @abstractmethod
+    def get_roadmap(self, roadmap_id: str) -> Optional[Roadmap]:
+        """Return a roadmap with its milestones, progress, and counts."""
+        ...
+
+    @abstractmethod
+    def list_roadmaps(self, workspace_id: str) -> List[Roadmap]:
+        """Return all roadmaps for a workspace, ordered by creation date descending."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Milestones
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def create_milestone(
+        self,
+        roadmap_id: str,
+        title: str,
+        description: str,
+        status: str,
+        target_date: str,
+    ) -> RoadmapMilestone:
+        """Create a milestone within a roadmap."""
+        ...
+
+    @abstractmethod
+    def update_milestone(
+        self,
+        milestone_id: str,
+        *,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        status: Optional[str] = None,
+        target_date: Optional[str] = None,
+        sort_order: Optional[int] = None,
+    ) -> RoadmapMilestone:
+        """Update a milestone. Fields left ``None`` are unchanged."""
+        ...
+
+    @abstractmethod
+    def delete_milestone(self, milestone_id: str) -> None:
+        """Delete a milestone."""
+        ...
+
+    @abstractmethod
+    def get_milestone(self, milestone_id: str) -> Optional[RoadmapMilestone]:
+        """Return a single milestone or ``None``."""
+        ...
+
+    @abstractmethod
+    def list_milestones(self, roadmap_id: str) -> List[RoadmapMilestone]:
+        """Return all milestones for a roadmap, ordered by sort_order."""
+        ...
+
+    @abstractmethod
+    def reorder_milestones(self, roadmap_id: str, ordered_ids: List[str]) -> List[RoadmapMilestone]:
+        """Reorder milestones by assigning sort_order based on position in the list."""
+        ...
+
+    @abstractmethod
+    def get_roadmap_counts(self) -> dict:
+        """Return aggregate roadmap/milestone counts across all workspaces."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Tasks
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def create_task(self, *, title: str, description: str, status: str,
+                    priority: str, workspace_id: Optional[str] = None,
+                    repository_id: Optional[str] = None, roadmap_id: Optional[str] = None,
+                    milestone_id: Optional[str] = None, adr_id: Optional[str] = None,
+                    journal_id: Optional[str] = None, labels: List[str] | None = None,
+                    estimate_hours: Optional[float] = None, actual_hours: Optional[float] = None,
+                    due_date: str = "", dependency_ids: List[str] | None = None) -> Task:
+        """Create a task with optional links and dependencies."""
+        ...
+
+    @abstractmethod
+    def update_task(self, task_id: str, **kwargs) -> Task:
+        """Update a task. Fields passed as keyword arguments are updated."""
+        ...
+
+    @abstractmethod
+    def delete_task(self, task_id: str) -> None:
+        """Delete a task, its labels, dependencies, and comments (cascaded)."""
+        ...
+
+    @abstractmethod
+    def get_task(self, task_id: str) -> Optional[Task]:
+        """Return a task with labels, dependencies, and comments."""
+        ...
+
+    @abstractmethod
+    def list_tasks(self, workspace_id: str, *, status: Optional[str] = None,
+                   priority: Optional[str] = None, label: Optional[str] = None,
+                   repository_id: Optional[str] = None, roadmap_id: Optional[str] = None,
+                   milestone_id: Optional[str] = None, adr_id: Optional[str] = None,
+                   journal_id: Optional[str] = None, q: Optional[str] = None,
+                   overdue: Optional[bool] = None,
+                   limit: Optional[int] = None) -> List[Task]:
+        """List tasks with optional filters."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Task Comments
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def add_comment(self, task_id: str, author: str, body: str) -> TaskComment:
+        """Add a comment to a task."""
+        ...
+
+    @abstractmethod
+    def list_comments(self, task_id: str) -> List[TaskComment]:
+        """Return all comments for a task, oldest first."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Task Dependencies
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def set_dependencies(self, task_id: str, depends_on_ids: List[str]) -> None:
+        """Replace the dependency list for a task."""
+        ...
+
+    @abstractmethod
+    def get_dependencies(self, task_id: str) -> tuple:
+        """Return ``(dependencies, depends_on)`` as tuple of Task lists."""
+        ...
+
+    @abstractmethod
+    def get_task_stats(self) -> TaskStats:
+        """Return aggregate task statistics."""
+        ...
