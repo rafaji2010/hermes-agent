@@ -20,11 +20,9 @@ if str(_REPO_ROOT) not in sys.path:
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from plugins.workspace.backend.database import DatabaseManager  # type: ignore[import-untyped]
 from plugins.workspace.backend.services.scope_resolver import (  # type: ignore[import-untyped]
     ProjectScopeResolver,
 )
-from plugins.workspace.backend.storage.sqlite_storage import SQLiteStorage  # type: ignore[import-untyped]
 from plugins.workspace.dashboard.plugin_api import router  # type: ignore[import-untyped]
 
 
@@ -54,31 +52,33 @@ class FakeProjectStore:
 
 
 @pytest.fixture(autouse=True)
-def _isolated_db():
-    import plugins.workspace.backend.database as db_mod
+def _isolated_db(tmp_path):
+    """Pin the legacy DB singleton AND the Workspace runtime to one
+    fresh in-memory database (U1D-A)."""
+    from plugins.workspace.backend.tests._helpers import (
+        pin_memory_workspace_state,
+        unpin_memory_workspace_state,
+    )
 
-    db_mod._db = None
-    mem = DatabaseManager(db_path=Path(":memory:"))
-    mem.get_connection()
-    db_mod._db = mem
+    pin_memory_workspace_state(tmp_path)
     yield
-    db_mod._db = None
+    unpin_memory_workspace_state()
 
 
 @pytest.fixture
 def scope_env(monkeypatch):
-    """Install a fake-backed resolver into the v1 module singletons."""
+    """Install a fake-backed resolver onto the active Workspace runtime."""
     import plugins.workspace.backend.api.v1 as v1
 
     store = FakeProjectStore()
     sessions: Dict[str, dict] = {}
     resolver = ProjectScopeResolver(
-        storage=SQLiteStorage(),
+        storage=v1._runtime().storage,
         project_lookup=store.lookup,
         session_meta=lambda sid: sessions.get(sid),
         project_slug=store.slug,
     )
-    monkeypatch.setattr(v1, "_scope_svc", resolver)
+    monkeypatch.setattr(v1._runtime(), "_scope_resolver", resolver)
     return {"store": store, "sessions": sessions}
 
 

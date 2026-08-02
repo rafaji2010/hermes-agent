@@ -14,7 +14,6 @@ if str(_REPO_ROOT) not in sys.path:
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from plugins.workspace.backend.database import DatabaseManager  # type: ignore[import-untyped]
 from plugins.workspace.backend.services.workspace_service import WorkspaceService  # type: ignore[import-untyped]
 from plugins.workspace.dashboard.plugin_api import router  # type: ignore[import-untyped]
 
@@ -31,15 +30,17 @@ VALID_1 = (
 
 
 @pytest.fixture(autouse=True)
-def _isolated_db():
-    import plugins.workspace.backend.database as db_mod
+def _isolated_db(tmp_path):
+    """Pin the legacy DB singleton AND the Workspace runtime to one
+    fresh in-memory database (U1D-A)."""
+    from plugins.workspace.backend.tests._helpers import (
+        pin_memory_workspace_state,
+        unpin_memory_workspace_state,
+    )
 
-    db_mod._db = None
-    mem = DatabaseManager(db_path=Path(":memory:"))
-    mem.get_connection()
-    db_mod._db = mem
+    pin_memory_workspace_state(tmp_path)
     yield
-    db_mod._db = None
+    unpin_memory_workspace_state()
 
 
 def client() -> TestClient:

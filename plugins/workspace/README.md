@@ -115,7 +115,33 @@ Capabilities with `approval_required=True` (tier 2/3) never execute automaticall
 | S7.2 — Project Scope & Authority Alignment | ✓ | 62 |
 | S7.2R — Repository Recovery & Baseline Restoration | ✓ | 451 (+8 desktop) |
 | S7.3A — Canonical ADR Reconciliation | ✓ | 71 (+7 desktop) |
-| S7.U1 — Upstream Hermes Reconciliation | U1A ✓ · U1B ✓ · U1C ✓ | 522 backend; 35 desktop vitest |
+| S7.U1 — Upstream Hermes Reconciliation | U1A ✓ · U1B ✓ · U1C ✓ · U1D-A ✓ | 522 backend; 35 desktop vitest |
+
+### S7.U1D-A — Profile-Scoped Backend Runtime Ownership
+
+The Workspace backend no longer pins to the first profile a process sees.
+
+- **`WorkspaceRuntime`** (`backend/runtime.py`) owns every
+  profile-sensitive component — `DatabaseManager(home/"workspace.db")`,
+  storage, authorization, resource limits, sandbox, audit logger, and all
+  services — for ONE effective Hermes home.
+- **Effective-home lookup at call time.** `get_workspace_runtime()`
+  resolves `get_hermes_home()` per call (context-local override aware via
+  `set_hermes_home_override`), then returns the cached runtime keyed by
+  the normalized home. A single process serving multiple profiles gets
+  one runtime per profile; normal Desktop pooled backends (one profile per
+  process) hold a single entry. No import-time HERMES_HOME capture.
+- **Lifecycle.** Lazy per-home creation; per-home reuse; explicit
+  `close()`; `reset_workspace_runtimes()` for tests/shutdown; `atexit`
+  cleanup. REST contracts unchanged.
+- **Audit isolation.** Each runtime's `AuditLogger` writes to
+  `<home>/logs/audit.log` for its own home — profile A never writes audit
+  state into profile B.
+- Tests: `backend/tests/test_runtime_isolation.py` proves same-process
+  A → B → A isolation against real temporary HERMES_HOME dirs.
+
+**Next: S7.U1D-B — SQLite lifecycle/concurrency (connection ownership is
+unchanged in U1D-A).**
 
 ### S7.U1C — Desktop Plugin SDK & Runtime Adaptation
 

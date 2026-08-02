@@ -52,7 +52,6 @@ from fastapi import APIRouter, HTTPException, Query
 from hermes_constants import get_hermes_home  # type: ignore[import-untyped]
 from pydantic import BaseModel
 
-from ..database import get_database
 from ..models import (
     ADRCanonicalDeleteError,
     ADRCanonicalUpdateError,
@@ -127,202 +126,107 @@ from ..services.scope_resolver import ProjectScopeResolver
 from ..services.search_service import SearchService
 from ..services.task_service import TaskService
 from ..services.workspace_service import WorkspaceService
-from ..storage.sqlite_storage import SQLiteStorage
 from ..security.authorization import AuthorizationMiddleware
-from ..security.capabilities import CapabilityRegistry
-from ..security.audit import get_audit_logger
 from ..security.resource_limits import ResourceLimiter
-from ..security.sandbox import PathSandbox, SandboxConfig
+from ..security.sandbox import PathSandbox
 
 _log = logging.getLogger("hermes.plugins.workspace.api.v1")
 
 router = APIRouter(prefix="/v1", tags=["workspace-v1"])
 
 # ---------------------------------------------------------------------------
-# Security component singletons
+# Profile-scoped runtime (U1D-A)
 # ---------------------------------------------------------------------------
+#
+# Every profile-sensitive component (database, storage, services, security,
+# audit) is owned by the WorkspaceRuntime bound to the EFFECTIVE Hermes
+# home, resolved at call time.  These thin accessors keep the route layer
+# stable while eliminating first-profile pinning.
 
-_authz: AuthorizationMiddleware | None = None
-_limits: ResourceLimiter | None = None
-_sandbox: PathSandbox | None = None
+from ..runtime import get_workspace_runtime  # noqa: E402
+
+
+def _runtime():
+    """Return the Workspace runtime for the current effective home."""
+    return get_workspace_runtime()
 
 
 def _get_authz() -> AuthorizationMiddleware:
-    """Return the module-level authorization middleware singleton."""
-    global _authz
-    if _authz is None:
-        _authz = AuthorizationMiddleware(
-            registry=CapabilityRegistry(),
-            audit_logger=get_audit_logger(),
-        )
-    return _authz
+    """Return the runtime's authorization middleware."""
+    return _runtime().authz
 
 
 def _get_limits() -> ResourceLimiter:
-    """Return the module-level resource limiter singleton."""
-    global _limits
-    if _limits is None:
-        _limits = ResourceLimiter()
-    return _limits
+    """Return the runtime's resource limiter."""
+    return _runtime().limits
 
 
 def _get_sandbox() -> PathSandbox:
-    """Return the module-level path sandbox singleton."""
-    global _sandbox
-    if _sandbox is None:
-        _sandbox = PathSandbox()
-    return _sandbox
+    """Return the runtime's path sandbox."""
+    return _runtime().sandbox
+
 
 # ---------------------------------------------------------------------------
-# Service singleton (lazy)
+# Service accessors (runtime-owned)
 # ---------------------------------------------------------------------------
-
-_svc: WorkspaceService | None = None
-_adr_svc: ADRService | None = None
 
 
 def _service() -> WorkspaceService:
-    """Return the module-level ``WorkspaceService`` singleton."""
-    global _svc
-    if _svc is None:
-        _svc = WorkspaceService(
-            storage=SQLiteStorage(),
-            authz=_get_authz(),
-            limits=_get_limits(),
-            sandbox=_get_sandbox(),
-        )
-    return _svc
+    """Return the runtime's ``WorkspaceService``."""
+    return _runtime().workspace_service
 
 
 def _adr_service() -> ADRService:
-    """Return the module-level ``ADRService`` singleton."""
-    global _adr_svc
-    if _adr_svc is None:
-        _adr_svc = ADRService(
-            storage=SQLiteStorage(),
-            authz=_get_authz(),
-            limits=_get_limits(),
-        )
-    return _adr_svc
-
-
-_adr_reconcile_svc: ADRReconcileService | None = None
+    """Return the runtime's ``ADRService``."""
+    return _runtime().adr_service
 
 
 def _adr_reconcile_service() -> ADRReconcileService:
-    """Return the module-level ``ADRReconcileService`` singleton."""
-    global _adr_reconcile_svc
-    if _adr_reconcile_svc is None:
-        _adr_reconcile_svc = ADRReconcileService(
-            storage=SQLiteStorage(),
-            authz=_get_authz(),
-            limits=_get_limits(),
-            sandbox=_get_sandbox(),
-        )
-    return _adr_reconcile_svc
-
-
-_journal_svc: JournalService | None = None
+    """Return the runtime's ``ADRReconcileService``."""
+    return _runtime().adr_reconcile_service
 
 
 def _journal_service() -> JournalService:
-    """Return the module-level ``JournalService`` singleton."""
-    global _journal_svc
-    if _journal_svc is None:
-        _journal_svc = JournalService(
-            storage=SQLiteStorage(),
-            authz=_get_authz(),
-            limits=_get_limits(),
-        )
-    return _journal_svc
-
-
-_roadmap_svc: RoadmapService | None = None
+    """Return the runtime's ``JournalService``."""
+    return _runtime().journal_service
 
 
 def _roadmap_service() -> RoadmapService:
-    """Return the module-level ``RoadmapService`` singleton."""
-    global _roadmap_svc
-    if _roadmap_svc is None:
-        _roadmap_svc = RoadmapService(
-            storage=SQLiteStorage(),
-            authz=_get_authz(),
-            limits=_get_limits(),
-        )
-    return _roadmap_svc
-
-
-_task_svc: TaskService | None = None
+    """Return the runtime's ``RoadmapService``."""
+    return _runtime().roadmap_service
 
 
 def _task_service() -> TaskService:
-    """Return the module-level ``TaskService`` singleton."""
-    global _task_svc
-    if _task_svc is None:
-        _task_svc = TaskService(
-            storage=SQLiteStorage(),
-            authz=_get_authz(),
-            limits=_get_limits(),
-        )
-    return _task_svc
-
-
-_search_svc: SearchService | None = None
+    """Return the runtime's ``TaskService``."""
+    return _runtime().task_service
 
 
 def _search_service() -> SearchService:
-    global _search_svc
-    if _search_svc is None:
-        _search_svc = SearchService(storage=SQLiteStorage())
-    return _search_svc
-
-
-_graph_svc: GraphService | None = None
+    """Return the runtime's ``SearchService``."""
+    return _runtime().search_service
 
 
 def _graph_service() -> GraphService:
-    global _graph_svc
-    if _graph_svc is None:
-        _graph_svc = GraphService(storage=SQLiteStorage())
-    return _graph_svc
-
-
-_analytics_svc: AnalyticsService | None = None
+    """Return the runtime's ``GraphService``."""
+    return _runtime().graph_service
 
 
 def _analytics_service() -> AnalyticsService:
-    global _analytics_svc
-    if _analytics_svc is None:
-        _analytics_svc = AnalyticsService(storage=SQLiteStorage())
-    return _analytics_svc
-
-
-_assistant_svc: WorkspaceAssistantService | None = None
+    """Return the runtime's ``AnalyticsService``."""
+    return _runtime().analytics_service
 
 
 def _assistant_service() -> WorkspaceAssistantService:
-    global _assistant_svc
-    if _assistant_svc is None:
-        _assistant_svc = WorkspaceAssistantService(
-            search=_search_service(),
-            graph=_graph_service(),
-            analytics=_analytics_service(),
-        )
-    return _assistant_svc
-
-
-_scope_svc: ProjectScopeResolver | None = None
+    """Return the runtime's ``WorkspaceAssistantService``."""
+    return _runtime().assistant_service
 
 
 def _scope_resolver() -> ProjectScopeResolver:
-    """Return the module-level ProjectScopeResolver singleton.
+    """Return the runtime's ``ProjectScopeResolver``.
 
-    Tests may replace ``_scope_svc`` with a resolver wired to fakes.
+    Tests inject a fake-backed resolver onto the active runtime.
     """
-    global _scope_svc
-    if _scope_svc is None:
-        _scope_svc = ProjectScopeResolver(storage=SQLiteStorage())
-    return _scope_svc
+    return _runtime().scope_resolver
 
 
 # ---------------------------------------------------------------------------
@@ -459,7 +363,7 @@ def _build_status() -> StatusResponse:
     calls this endpoint on every open and on manual refresh.  It is NOT
     called on the hot path (agent turns, streaming).
     """
-    db = get_database()
+    db = _runtime().database
     try:
         db.get_connection()
     except Exception:

@@ -23,6 +23,8 @@ from plugins.workspace.backend.database import (  # type: ignore[import-untyped]
 from plugins.workspace.backend.services.workspace_service import WorkspaceService  # type: ignore[import-untyped]
 from plugins.workspace.backend.storage.sqlite_storage import SQLiteStorage  # type: ignore[import-untyped]
 
+from ._helpers import pin_memory_workspace_state, unpin_memory_workspace_state
+
 
 @pytest.fixture(autouse=True)
 def _reset_db_singleton():
@@ -39,6 +41,19 @@ def _reset_db_singleton():
     db_mod._db = None
     yield
     db_mod._db = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_workspace_runtime(tmp_path):
+    """Pin a fresh in-memory Workspace runtime per test (U1D-A).
+
+    API routes resolve their services through the profile-scoped
+    WorkspaceRuntime; pinning an in-memory runtime per test keeps every
+    test isolated (mirrors the legacy ``database._db`` pin convention).
+    """
+    pin_memory_workspace_state(tmp_path)
+    yield
+    unpin_memory_workspace_state()
 
 
 @pytest.fixture

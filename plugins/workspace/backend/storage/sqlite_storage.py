@@ -102,14 +102,23 @@ def _repository_from_row(row: sqlite3.Row) -> Repository:
 
 
 class SQLiteStorage(AbstractStorage):
-    """SQLite-backed persistent storage for workspaces and repositories."""
+    """SQLite-backed persistent storage for workspaces and repositories.
 
-    def __init__(self, db_path: Optional[Path] = None):
+    ``db_manager`` binds this storage to an explicit :class:`DatabaseManager`
+    (owned by the profile-scoped Workspace runtime — U1D-A).  When omitted,
+    the legacy module-level ``get_database()`` singleton is used (kept for
+    direct-construction tests and back-compat).
+    """
+
+    def __init__(self, db_path: Optional[Path] = None, db_manager=None):
         self._db_path = db_path
+        self._db_manager = db_manager
         self._transaction_depth = 0
 
     @property
     def _conn(self) -> "sqlite3.Connection":
+        if self._db_manager is not None:
+            return self._db_manager.get_connection()
         return get_database(self._db_path).get_connection()
 
     # ------------------------------------------------------------------
