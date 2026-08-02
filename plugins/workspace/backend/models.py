@@ -8,7 +8,7 @@ converting between database rows and these models.
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -1171,8 +1171,15 @@ class ResolvedProjectScope(BaseModel):
                          link is missing (an explicit mapping is needed).
       * ``unmapped``   — workspace exists but no mapping and no path
                          evidence; backfill may propose one.
+      * ``ambiguous``  — more than one candidate Workspace matches the
+                         current context (duplicate links); callers MUST
+                         fail closed rather than choose.
       * ``unresolved`` — nothing could be identified; callers must NOT
                          fall back to a global scope.
+
+    ``provenance`` records WHY the Workspace was selected (profile home,
+    session id, cwd, git root, project id) for explainability — it never
+    contains another profile's or workspace's sensitive data.
     """
 
     workspace_id: str = ""
@@ -1182,6 +1189,7 @@ class ResolvedProjectScope(BaseModel):
     state: str = "unresolved"
     match_source: str = "none"  # explicit | session_cwd | session_git_root | mapping | none
     matched_path: str = ""
+    provenance: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ScopeBackfillRequest(BaseModel):
@@ -1241,3 +1249,13 @@ class AmbiguousProjectMappingError(ProjectLinkError):
 class ScopeResolutionError(WorkspaceError):
     def __init__(self, message: str):
         super().__init__(message, code="SCOPE_UNRESOLVED")
+
+
+class ScopeAmbiguousError(WorkspaceError):
+    """Raised when more than one Workspace matches the current context.
+
+    Callers must fail closed — never silently pick a candidate.
+    """
+
+    def __init__(self, message: str):
+        super().__init__(message, code="SCOPE_AMBIGUOUS")

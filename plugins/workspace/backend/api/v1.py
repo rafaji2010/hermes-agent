@@ -97,6 +97,7 @@ from ..models import (
     ScopeBackfillRequest,
     ScopeBackfillResponse,
     ScopeResolveRequest,
+    ScopeAmbiguousError,
     ScopeResolutionError,
     SearchResponse,
     ShortestPathResponse,
@@ -254,14 +255,20 @@ def _enforce_scope(
     """Return the effective workspace scope for a request.
 
     An explicit ``workspace_id`` passes through unchanged.  Otherwise the
-    scope resolver is consulted; an unresolvable scope raises
-    ``ScopeResolutionError`` (HTTP 403) instead of widening to global.
+    scope resolver is consulted; an unresolvable OR ambiguous scope raises
+    ``ScopeResolutionError`` / ``ScopeAmbiguousError`` (HTTP 403) instead
+    of widening to global or silently choosing among candidates.
     """
     if workspace_id:
         return workspace_id
     resolved = _scope_resolver().resolve(
         ScopeResolveRequest(session_id=session_id, cwd=cwd)
     )
+    if resolved.state == "ambiguous":
+        raise ScopeAmbiguousError(
+            "Scope is ambiguous: multiple workspaces match the current "
+            "context. Refusing to choose silently."
+        )
     if resolved.workspace_id:
         return resolved.workspace_id
     raise ScopeResolutionError(
@@ -299,6 +306,15 @@ def _require_scope(
         ) from exc
     try:
         return _enforce_scope(workspace_id, session_id, cwd)
+    except ScopeAmbiguousError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail=ErrorDetail(
+                error="Scope ambiguous",
+                detail=str(exc),
+                code=exc.code,
+            ).model_dump(),
+        ) from exc
     except ScopeResolutionError as exc:
         raise HTTPException(
             status_code=403,

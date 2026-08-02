@@ -115,7 +115,67 @@ Capabilities with `approval_required=True` (tier 2/3) never execute automaticall
 | S7.2 — Project Scope & Authority Alignment | ✓ | 62 |
 | S7.2R — Repository Recovery & Baseline Restoration | ✓ | 451 (+8 desktop) |
 | S7.3A — Canonical ADR Reconciliation | ✓ | 71 (+7 desktop) |
-| S7.U1 — Upstream Hermes Reconciliation | U1A ✓ · U1B ✓ · U1C ✓ · U1D-A ✓ · U1D-B ✓ · U1D-C ✓ | 563 backend; 35 desktop vitest |
+| S7.U1 — Upstream Hermes Reconciliation | U1A ✓ · U1B ✓ · U1C ✓ · U1D-A ✓ · U1D-B ✓ · U1D-C ✓ · U1D-D ✓ | 588 backend; 35 desktop vitest |
+
+### S7.U1D-D — Project / Session / Profile Authority Alignment
+
+The backend `ProjectScopeResolver` answers "which Workspace is
+authoritative for the current Hermes execution context" deterministically,
+or fails closed.
+
+**Authority namespaces** (never conflated):
+
+| Identity | Namespace | Authoritative for |
+|---|---|---|
+| A. Desktop runtime session id (`host.state.activeSessionId`) | volatile, renderer-local | nothing — never a SessionDB key |
+| B. Durable SessionDB id (`sessions.id` == `session_key`) | `state.db` | session cwd/git-root evidence |
+| C. Filesystem CWD | request param / session row | project path lookup |
+| D. Repository identity | project folders / registered repos | context, not authority |
+| E. Workspace identity | `workspace.db` | the resolved scope itself |
+| F. Profile / HERMES_HOME | runtime home (U1D-A) | OUTER boundary |
+
+**Precedence (deterministic):** 1) explicit `workspace_id` with a valid
+non-archived mapping → 2) explicit request CWD → project → reverse
+mapping → 3) durable session CWD → project → reverse mapping → 4)
+durable session git root → project → reverse mapping → 5) unresolved /
+unmapped / partial.  An explicit CWD that resolves to nothing NEVER falls
+back to a conflicting session git root.
+
+**Read-only session boundary.** Durable session metadata is read through
+`backend/session_context.read_session_meta` — a narrow read-only
+`SessionDB` adapter that keys ONLY on the durable row id, closes
+deterministically, and rejects archived sessions.  Workspace never
+creates/repairs/deletes sessions.
+
+**Fail-closed rules.** Archived projects make explicit mappings stale
+(unmapped); archived sessions are never authoritative; a project mapped
+to multiple workspaces resolves to state `ambiguous` (403
+`SCOPE_AMBIGUOUS` — never a silent first-row choice); missing sessions,
+missing CWDs, and process CWD (without any anchor) all resolve
+`unresolved`.  Profile A can never authorize access in profile B — even
+with identical session ids, repo paths, and workspace names.
+
+**Provenance.** Every `ResolvedProjectScope` carries a `provenance` dict
+(profile home, session id, cwd, git root, project id, match source)
+explaining WHY a Workspace was selected; no cross-profile sensitive data
+is exposed.
+
+**Known limitations.** Repository registration is workspace-local data
+and is not consulted as authority (Hermes Project folders are); stale
+registered-repo paths are therefore harmless to resolution but documented
+as informational.  Symlink handling follows `projects_db` normalization
+(no extra resolution).
+
+Tests: `backend/tests/test_authority_resolution.py` (24 tests) — real
+temp HERMES_HOME + real `projects.db` + real durable `state.db` +
+`workspace.db`: valid/nested resolution, volatile-vs-durable identity,
+archived/stale/missing sessions and projects, duplicate-mapping
+ambiguity, conflicting-signal precedence, profile A/B/A isolation,
+CWD edge cases, process-CWD non-authority, API-level 403
+ambiguous/unresolved, backfill/link rejection of archived projects, and
+resolution provenance.
+
+**Next: S7.U1D-E — ADR filesystem reconciliation hardening.**
 
 ### S7.U1D-C — API Scope & Authorization Enforcement
 

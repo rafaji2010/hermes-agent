@@ -81,12 +81,22 @@ def test_mapped_workspace_wins(storage, ws):
 
 
 def test_mapped_workspace_without_path_evidence(storage, ws):
-    """A mapping alone is sufficient — no session needed."""
+    """A mapping alone is sufficient — no session needed (project must exist)."""
     storage.link_project(ws.id, "p_abc")
-    resolver = make_resolver(storage, FakeProjectStore({}))
+    resolver = make_resolver(storage, FakeProjectStore({"/proj": ("p_abc", "proj-a")}))
     result = resolver.resolve(ScopeResolveRequest(workspace_id=ws.id))
     assert result.state == "mapped"
     assert result.project_id == "p_abc"
+
+
+def test_mapping_to_missing_project_is_stale(storage, ws):
+    """U1D-D: a mapping to a project that no longer exists is stale →
+    unmapped (never revived as authority)."""
+    storage.link_project(ws.id, "p_ghost")
+    resolver = make_resolver(storage, FakeProjectStore({}))
+    result = resolver.resolve(ScopeResolveRequest(workspace_id=ws.id))
+    assert result.state == "unmapped"
+    assert result.project_id is None
 
 
 def test_unmapped_workspace_no_evidence(storage, ws):
@@ -105,7 +115,7 @@ def test_unmapped_workspace_with_path_evidence_partial(storage, ws):
     )
     assert result.state == "partial"
     assert result.project_id == "p_xyz"
-    assert result.match_source == "session_cwd"
+    assert result.match_source == "explicit_cwd"
     assert result.matched_path == "/tmp/resolver/sub"
 
 
@@ -175,7 +185,7 @@ def test_explicit_cwd_overrides_session(storage):
         ScopeResolveRequest(session_id="s5", cwd="/override")
     )
     assert result.project_id == "p_o"
-    assert result.match_source == "session_cwd"
+    assert result.match_source == "explicit_cwd"
 
 
 def test_missing_workspace_raises(storage):
