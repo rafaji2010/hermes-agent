@@ -438,8 +438,20 @@ def _api_error(exc: Exception) -> HTTPException:
             "DUPLICATE_SLUG",
             "ADR_CANONICAL_UPDATE",
             "ADR_CANONICAL_DELETE",
+            "ADR_CONFLICT",
+            "ADR_ALREADY_CANONICAL",
+            "MATERIALIZE_TARGET_EXISTS",
         ):
             status = 409
+        if code in (
+            "ADR_UNSAFE_PATH",
+            "ADR_SANDBOX_DENIED",
+            "ADR_NO_PROJECT_AUTHORITY",
+            "ADR_NO_REPOSITORY",
+            "ADR_AMBIGUOUS_REPOSITORY",
+            "ADR_MISSING_FILE",
+        ):
+            status = 400
         return _error(status, exc)
     if isinstance(exc, AuthorizationDenied):
         return _error_detail(403, "Authorization denied", str(exc), "AUTHORIZATION_DENIED")
@@ -989,8 +1001,8 @@ def reconcile_adrs(payload: ADRReconcileRequest):
         return _adr_reconcile_service().reconcile(
             workspace_id, dry_run=payload.dry_run, session_id=payload.session_id
         )
-    except WorkspaceError as exc:
-        raise _error(404, exc) from exc
+    except Exception as exc:
+        raise _api_error(exc) from exc
 
 
 @router.get("/adrs/reconcile/status", response_model=ADRReconcileStatusList)
@@ -1006,8 +1018,8 @@ def adr_reconcile_status(
     )
     try:
         statuses = _adr_reconcile_service().status(workspace_id)
-    except WorkspaceError as exc:
-        raise _error(404, exc) from exc
+    except Exception as exc:
+        raise _api_error(exc) from exc
     return ADRReconcileStatusList(statuses=statuses)
 
 
@@ -1039,12 +1051,8 @@ def materialize_adr(
         result = _adr_reconcile_service().materialize(
             adr_id, dry_run=payload.dry_run, session_id=session_id
         )
-    except ADRReconcileError as exc:
-        code = exc.code
-        status = 409 if code in ("ADR_ALREADY_CANONICAL", "MATERIALIZE_TARGET_EXISTS") else 400
-        raise _error(status, exc) from exc
-    except WorkspaceError as exc:
-        raise _error(404, exc) from exc
+    except Exception as exc:
+        raise _api_error(exc) from exc
     if result.status == "target_exists":
         raise HTTPException(
             status_code=409,
@@ -1086,12 +1094,8 @@ def update_adr_file(
         )
     except ADRCanonicalUpdateError as exc:
         raise _error(409, exc) from exc
-    except ADRReconcileError as exc:
-        code = exc.code
-        status = 409 if code in ("ADR_ALREADY_CANONICAL", "ADR_MISSING_FILE") else 400
-        raise _error(status, exc) from exc
-    except WorkspaceError as exc:
-        raise _error(404, exc) from exc
+    except Exception as exc:
+        raise _api_error(exc) from exc
 
 
 @router.post("/adrs", response_model=ADRList, status_code=201)

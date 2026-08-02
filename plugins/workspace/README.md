@@ -115,7 +115,68 @@ Capabilities with `approval_required=True` (tier 2/3) never execute automaticall
 | S7.2 — Project Scope & Authority Alignment | ✓ | 62 |
 | S7.2R — Repository Recovery & Baseline Restoration | ✓ | 451 (+8 desktop) |
 | S7.3A — Canonical ADR Reconciliation | ✓ | 71 (+7 desktop) |
-| S7.U1 — Upstream Hermes Reconciliation | U1A ✓ · U1B ✓ · U1C ✓ · U1D-A ✓ · U1D-B ✓ · U1D-C ✓ · U1D-D ✓ | 588 backend; 35 desktop vitest |
+| S7.U1 — Upstream Hermes Reconciliation | U1A ✓ · U1B ✓ · U1C ✓ · U1D-A ✓ · U1D-B ✓ · U1D-C ✓ · U1D-D ✓ · U1D-E ✓ | 612 backend; 35 desktop vitest |
+
+### S7.U1D-E — ADR Filesystem Reconciliation Hardening
+
+Canonical ADR reconciliation is now safe against project-authority
+escapes, hostile paths, and silent clobbering.
+
+- **Filesystem authority chain.** profile/HERMES_HOME → mapped Hermes
+  Project → project folders → workspace → ADR identity → canonical
+  relative path → contained absolute path.  Reconciliation, status,
+  materialize and update-file all require a valid (non-archived) project
+  mapping (`ADR_NO_PROJECT_AUTHORITY` otherwise) and only touch
+  repositories whose root lies INSIDE the project folders.  A stored or
+  caller path never overrides project-root authority; the ADR must name
+  its repository, or the single authorized repository may be used —
+  multiple candidates without an explicit choice fail closed
+  (`ADR_AMBIGUOUS_REPOSITORY`).
+- **Canonical path contract.** `canonical_path` must be relative, under
+  `docs/adr/` (or configured ADR dirs), `.md`-suffixed, with no
+  absolute/`.`/`..` components.  Violations are rejected
+  (`ADR_UNSAFE_PATH`) — never normalized into acceptance.
+- **Containment.** Every access resolves the candidate (following
+  symlinks) and verifies parent-chain containment against the repo root —
+  no string-prefix checks.  Symlink escapes (dir, file, parent,
+  destination) are rejected or skipped; discovery skips escaping entries.
+- **Hashing.** SHA-256 of the exact file bytes; newline-only changes are
+  detected; identical bytes are a no-op.
+- **No-clobber / CAS.** File updates verify the on-disk hash against the
+  stored `content_hash` before writing AND immediately before the atomic
+  replace; external modification raises `ADR_CONFLICT` (409) with the
+  external bytes preserved.  Materialization creates files with atomic
+  no-clobber semantics (unexpected existing files are never overwritten).
+- **Conflicts are first-class** (`ADR_CONFLICT`, `file_and_db_changed`,
+  `legacy_db_and_file_differ`, …) and never surface as 500s.
+- **Atomic writes.** Temp file in the same directory → fsync → atomic
+  replace (update) or hard-link create (materialize); temp cleanup on
+  failure.
+- **DB/fs ordering.** Files write first, projection follows; a crash in
+  between leaves a stale projection that the next reconciliation
+  converges deterministically (file wins).  Reconciliation scans the
+  filesystem outside any DB transaction; projection mutations apply in
+  one transaction.
+- **Concurrency.** Two concurrent file updates produce exactly one
+  success and one conflict — never corruption or silent last-writer-wins.
+- **Audit.** reconcile run / materialize / file update / repo-skipped /
+  conflict events via the existing audit logger (ids + safe metadata,
+  never content).
+- **Approval gap (for U1D-F).** `adr.reconcile.write` is tier-2
+  `approval_required` in the transplanted capability registry, but the
+  guard remains fail-open (approval-required decisions still permit
+  execution).  Filesystem-write authority was NOT broadened as a
+  workaround; host approval integration is deferred to U1D-F.
+- Tests: `backend/tests/test_adr_reconcile_hardening.py` (24 tests) —
+  authority (missing/archived/outside/ambiguous), path containment
+  (traversal, absolute, prefix-confusion, symlink dir/destination
+  escapes), byte hashing (newline change, identical no-op), no-clobber
+  (external modification, both-modified, pre-existing file), recovery
+  (write failure, stale projection convergence, deterministic retry),
+  concurrent updates, and API adversarial cases (cross-workspace, 409
+  conflict, stored-path escape).
+
+**Next: S7.U1D-F — host security primitive adoption.**
 
 ### S7.U1D-D — Project / Session / Profile Authority Alignment
 

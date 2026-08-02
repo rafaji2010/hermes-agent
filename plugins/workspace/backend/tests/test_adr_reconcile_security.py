@@ -81,13 +81,14 @@ def test_audit_events_emitted_for_reconcile_actions(storage, temp_git_repo):
             return None
 
     authz = AuthorizationMiddleware(audit_logger=CollectingLogger())
-    svc = ADRReconcileService(storage, authz=authz)
+    svc = ADRReconcileService(storage, authz=authz, project_folders=lambda _pid: [str(temp_git_repo)])
 
     ws = storage.create_workspace("audit-ws", str(temp_git_repo))
-    storage.register_repository(
+    r = storage.register_repository(
         workspace_id=ws.id, name="r", path=str(temp_git_repo),
         git_root=str(temp_git_repo), default_branch="main",
     )
+    storage.link_project(ws.id, "p_audit")
 
     # Reconcile (real) → audit event
     svc.reconcile(ws.id, dry_run=False)
@@ -99,7 +100,7 @@ def test_audit_events_emitted_for_reconcile_actions(storage, temp_git_repo):
 
     # Materialize → audit event with provenance
     adr = storage.create_adr(
-        workspace_id=ws.id, repository_id=None, title="Audit Legacy",
+        workspace_id=ws.id, repository_id=r.id, title="Audit Legacy",
         slug="audit-legacy", status="proposed", category="",
         markdown="# Audit Legacy\n", tags=[],
     )
@@ -134,12 +135,13 @@ def test_dry_run_reconcile_still_audited_as_read(storage, temp_git_repo):
             return None
 
     authz = AuthorizationMiddleware(audit_logger=CollectingLogger())
-    svc = ADRReconcileService(storage, authz=authz)
+    svc = ADRReconcileService(storage, authz=authz, project_folders=lambda _pid: [str(temp_git_repo)])
     ws = storage.create_workspace("dry-audit-ws", str(temp_git_repo))
     storage.register_repository(
         workspace_id=ws.id, name="r", path=str(temp_git_repo),
         git_root=str(temp_git_repo), default_branch="main",
     )
+    storage.link_project(ws.id, "p_dry_audit")
 
     svc.reconcile(ws.id, dry_run=True)
     # Dry-run is read-class: no run audit event (guard is at the API layer),

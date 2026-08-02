@@ -29,10 +29,16 @@ VALID_1 = (
 )
 
 
+_ACTIVE_HOME: Path | None = None
+
+
 @pytest.fixture(autouse=True)
 def _isolated_db(tmp_path):
     """Pin the legacy DB singleton AND the Workspace runtime to one
-    fresh in-memory database (U1D-A)."""
+    fresh in-memory database (U1D-A), and bind the effective HERMES_HOME
+    to ``tmp_path`` so real projects.db authority resolution works."""
+    global _ACTIVE_HOME
+    _ACTIVE_HOME = tmp_path
     from plugins.workspace.backend.tests._helpers import (
         pin_memory_workspace_state,
         unpin_memory_workspace_state,
@@ -43,13 +49,58 @@ def _isolated_db(tmp_path):
     unpin_memory_workspace_state()
 
 
-def client() -> TestClient:
+def client():
+    """TestClient whose requests run inside the test home override, so the
+    reconcile service's real projects.db lookups resolve correctly."""
+    from contextlib import contextmanager
+
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
     app = FastAPI()
     app.include_router(router)
-    return TestClient(app)
+    inner = TestClient(app)
+
+    class _ScopedClient:
+        def _call(self, method: str, *args, **kwargs):
+            token = set_hermes_home_override(str(_ACTIVE_HOME))
+            try:
+                return getattr(inner, method)(*args, **kwargs)
+            finally:
+                reset_hermes_home_override(token)
+
+        def get(self, *a, **kw):
+            return self._call("get", *a, **kw)
+
+        def post(self, *a, **kw):
+            return self._call("post", *a, **kw)
+
+        def put(self, *a, **kw):
+            return self._call("put", *a, **kw)
+
+        def delete(self, *a, **kw):
+            return self._call("delete", *a, **kw)
+
+    return _ScopedClient()
 
 
-def _setup_ws_with_repo(c: TestClient, git_root: Path, name: str = "recon-api-ws") -> str:
+def _link_project(c, ws_id: str, git_root: Path) -> None:
+    """Create a real Hermes Project whose folder is the repo, and link it.
+
+    U1D-E: ADR filesystem authority derives from the mapped project."""
+    from hermes_cli import projects_db
+
+    with projects_db.connect_closing(_ACTIVE_HOME / "projects.db") as conn:
+        pid = projects_db.create_project(
+            conn, name="recon-proj", folders=[str(git_root)]
+        )
+    resp = c.put(f"/v1/workspaces/{ws_id}/project", json={"project_id": pid})
+    assert resp.status_code == 200, resp.text
+
+
+def _setup_ws_with_repo(c, git_root: Path, name: str = "recon-api-ws") -> str:
     r = c.post("/v1/workspaces", json={"name": name})
     ws_id = r.json()["workspaces"][0]["id"]
     c.post("/v1/repositories", json={
@@ -57,6 +108,7 @@ def _setup_ws_with_repo(c: TestClient, git_root: Path, name: str = "recon-api-ws
         "name": "recon-repo",
         "path": str(git_root),
     })
+    _link_project(c, ws_id, git_root)
     return ws_id
 
 

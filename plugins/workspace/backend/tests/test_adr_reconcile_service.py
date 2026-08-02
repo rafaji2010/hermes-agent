@@ -28,8 +28,20 @@ from plugins.workspace.backend.services.workspace_service import (  # type: igno
 from plugins.workspace.backend.storage.sqlite_storage import SQLiteStorage  # type: ignore[import-untyped]
 
 
+def _svc(storage: SQLiteStorage, git_root: Path | None = None) -> ADRReconcileService:
+    """Service with injectable project authority (U1D-E)."""
+    if git_root is None:
+        folders = lambda _pid: ["/tmp/workspace-project"]  # noqa: E731
+    else:
+        folders = lambda _pid: [str(git_root)]  # noqa: E731
+    return ADRReconcileService(storage, project_folders=folders)
+
+
 def _setup(storage: SQLiteStorage, git_root: Path):
-    """Create a workspace + register the temp git repo."""
+    """Create a workspace + register the temp git repo, linked to a project.
+
+    U1D-E: ADR filesystem authority derives from the mapped project.
+    """
     ws = storage.create_workspace("reconcile-ws", str(git_root))
     repo = storage.register_repository(
         workspace_id=ws.id,
@@ -38,6 +50,7 @@ def _setup(storage: SQLiteStorage, git_root: Path):
         git_root=str(git_root),
         default_branch="main",
     )
+    storage.link_project(ws.id, "p_recon_test")
     return ws, repo
 
 
@@ -159,7 +172,7 @@ def test_discover_and_index_new_file(storage, temp_git_repo):
     _write_adr(temp_git_repo, "docs/other.md", "# Other\n")
     _write_adr(temp_git_repo, "README.md", "# Repo\n")
 
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     summary = svc.reconcile(ws.id)
 
     assert summary.scanned_files == 1  # only docs/adr/*.md
@@ -182,7 +195,7 @@ def test_reconcile_idempotent(storage, temp_git_repo):
     ws, _ = _setup(storage, temp_git_repo)
     _write_adr(temp_git_repo, "docs/adr/0001-use-sqlite.md", VALID_1)
 
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     s1 = svc.reconcile(ws.id)
     assert s1.indexed == 1
     adr = storage.list_adrs(ws.id)[0]
@@ -200,7 +213,7 @@ def test_reconcile_idempotent(storage, temp_git_repo):
 def test_changed_canonical_file_refreshes(storage, temp_git_repo):
     ws, _ = _setup(storage, temp_git_repo)
     _write_adr(temp_git_repo, "docs/adr/0001-use-sqlite.md", VALID_1)
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     svc.reconcile(ws.id)
 
     # External edit: new title + content.
@@ -221,7 +234,7 @@ def test_changed_canonical_file_refreshes(storage, temp_git_repo):
 def test_dry_run_previews_without_writing(storage, temp_git_repo):
     ws, _ = _setup(storage, temp_git_repo)
     _write_adr(temp_git_repo, "docs/adr/0001-use-sqlite.md", VALID_1)
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
 
     s = svc.reconcile(ws.id, dry_run=True)
     assert s.indexed == 1
@@ -237,7 +250,7 @@ def test_legacy_adr_stays_db_legacy(storage, temp_git_repo):
         slug="old-decision", status="proposed", category="",
         markdown="# Old\n", tags=[],
     )
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     s = svc.reconcile(ws.id)
     assert s.db_legacy == 1
     adr = storage.list_adrs(ws.id)[0]
@@ -255,7 +268,7 @@ def test_legacy_adr_matches_file_promoted(storage, temp_git_repo):
         tags=["database"],
     )
     _write_adr(temp_git_repo, "docs/adr/0001-use-sqlite.md", VALID_1)
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     s = svc.reconcile(ws.id)
     assert s.synced == 1
     adr = storage.list_adrs(ws.id)[0]
@@ -275,7 +288,7 @@ def test_legacy_adr_conflicts_with_file(storage, temp_git_repo):
         tags=[],
     )
     _write_adr(temp_git_repo, "docs/adr/0001-use-sqlite.md", VALID_1)
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     s = svc.reconcile(ws.id)
     assert s.conflict == 1
     adr = storage.list_adrs(ws.id)[0]
@@ -287,7 +300,7 @@ def test_legacy_adr_conflicts_with_file(storage, temp_git_repo):
 def test_missing_canonical_file(storage, temp_git_repo):
     ws, _ = _setup(storage, temp_git_repo)
     _write_adr(temp_git_repo, "docs/adr/0001-use-sqlite.md", VALID_1)
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     svc.reconcile(ws.id)
 
     # Delete the canonical file externally.
@@ -302,7 +315,7 @@ def test_missing_canonical_file(storage, temp_git_repo):
 def test_malformed_file_invalid(storage, temp_git_repo):
     ws, _ = _setup(storage, temp_git_repo)
     _write_adr(temp_git_repo, "docs/adr/0001-broken.md", "no heading, just prose\n")
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     s = svc.reconcile(ws.id)
     assert s.invalid == 1
     assert "docs/adr/0001-broken.md" in s.invalid_paths
@@ -316,7 +329,7 @@ def test_duplicate_identity_invalid(storage, temp_git_repo):
         temp_git_repo, "docs/adr/0002-same.md",
         "# Use SQLite\n\nSecond.\n",
     )
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     s = svc.reconcile(ws.id)
     assert s.invalid == 1
     assert s.indexed == 1  # first one indexed
@@ -329,7 +342,7 @@ def test_unrelated_markdown_ignored(storage, temp_git_repo):
     _write_adr(temp_git_repo, "docs/README.md", "# Docs\n")
     _write_adr(temp_git_repo, "README.md", "# Repo\n")
     _write_adr(temp_git_repo, "docs/adr/sub/0002-nested.md", VALID_2)
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     s = svc.reconcile(ws.id)
     assert s.scanned_files == 2
     assert s.indexed == 2
@@ -339,7 +352,7 @@ def test_rename_relinks_projection(storage, temp_git_repo):
     """A canonical file renamed within the ADR dir keeps identity + re-links."""
     ws, _ = _setup(storage, temp_git_repo)
     _write_adr(temp_git_repo, "docs/adr/0001-use-sqlite.md", VALID_1)
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     svc.reconcile(ws.id)
     adr = storage.list_adrs(ws.id)[0]
     assert adr.canonical_path == "docs/adr/0001-use-sqlite.md"
@@ -364,7 +377,7 @@ def test_status_live_states(storage, temp_git_repo):
         workspace_id=ws.id, repository_id=None, title="Legacy",
         slug="legacy-only", status="proposed", category="", markdown="# L\n", tags=[],
     )
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     svc.reconcile(ws.id)
 
     statuses = svc.status(ws.id)
@@ -377,11 +390,12 @@ def test_status_live_states(storage, temp_git_repo):
 
 def test_no_repositories_legacy_only(storage):
     ws = storage.create_workspace("norepo-ws", "")
+    storage.link_project(ws.id, "p_recon_test")
     storage.create_adr(
         workspace_id=ws.id, repository_id=None, title="L",
         slug="l", status="proposed", category="", markdown="# L\n", tags=[],
     )
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage)
     s = svc.reconcile(ws.id)
     assert s.scanned_files == 0
     assert s.db_legacy == 1
@@ -393,13 +407,13 @@ def test_no_repositories_legacy_only(storage):
 
 
 def test_materialize_preview(storage, temp_git_repo):
-    ws, _ = _setup(storage, temp_git_repo)
+    ws, repo = _setup(storage, temp_git_repo)
     adr = storage.create_adr(
-        workspace_id=ws.id, repository_id=None, title="Legacy",
+        workspace_id=ws.id, repository_id=repo.id, title="Legacy",
         slug="legacy-adr", status="accepted", category="Arch",
         markdown="# Legacy\n\nBody.", tags=["x"],
     )
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     result = svc.materialize(adr.id, dry_run=True)
     assert result.status == "preview"
     assert result.target_path == "docs/adr/0001-legacy-adr.md"
@@ -415,7 +429,7 @@ def test_materialize_success(storage, temp_git_repo):
         slug="legacy-adr", status="accepted", category="Arch",
         markdown="# Legacy\n\nBody.", tags=["x"],
     )
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     result = svc.materialize(adr.id, dry_run=False)
     assert result.status == "materialized"
     assert result.target_path == "docs/adr/0001-legacy-adr.md"
@@ -439,14 +453,14 @@ def test_materialize_success(storage, temp_git_repo):
 
 
 def test_materialize_target_exists(storage, temp_git_repo):
-    ws, _ = _setup(storage, temp_git_repo)
+    ws, repo = _setup(storage, temp_git_repo)
     _write_adr(temp_git_repo, "docs/adr/0001-legacy-adr.md", VALID_1)
     adr = storage.create_adr(
-        workspace_id=ws.id, repository_id=None, title="Legacy",
+        workspace_id=ws.id, repository_id=repo.id, title="Legacy",
         slug="legacy-adr", status="accepted", category="",
         markdown="# Legacy\n\nBody.", tags=[],
     )
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     result = svc.materialize(adr.id, dry_run=False)
     assert result.status == "target_exists"
     adr2 = storage.get_adr(adr.id)
@@ -455,11 +469,12 @@ def test_materialize_target_exists(storage, temp_git_repo):
 
 def test_materialize_no_repository(storage):
     ws = storage.create_workspace("norepo2-ws", "")
+    storage.link_project(ws.id, "p_recon_test")
     adr = storage.create_adr(
         workspace_id=ws.id, repository_id=None, title="L",
         slug="l", status="proposed", category="", markdown="# L\n", tags=[],
     )
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage)
     result = svc.materialize(adr.id, dry_run=False)
     assert result.status == "no_repository"
 
@@ -467,7 +482,7 @@ def test_materialize_no_repository(storage):
 def test_materialize_already_canonical_raises(storage, temp_git_repo):
     ws, _ = _setup(storage, temp_git_repo)
     _write_adr(temp_git_repo, "docs/adr/0001-use-sqlite.md", VALID_1)
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     svc.reconcile(ws.id)
     adr = storage.list_adrs(ws.id)[0]
     with pytest.raises(ADRReconcileError):
@@ -481,7 +496,7 @@ def test_materialize_sequence_numbering(storage, temp_git_repo):
         workspace_id=ws.id, repository_id=None, title="New",
         slug="new-adr", status="proposed", category="", markdown="# New\n", tags=[],
     )
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     result = svc.materialize(adr.id, dry_run=True)
     assert result.target_path == "docs/adr/0004-new-adr.md"
 
@@ -494,7 +509,7 @@ def test_materialize_sequence_numbering(storage, temp_git_repo):
 def test_update_file_success(storage, temp_git_repo):
     ws, _ = _setup(storage, temp_git_repo)
     _write_adr(temp_git_repo, "docs/adr/0001-use-sqlite.md", VALID_1)
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     svc.reconcile(ws.id)
     adr = storage.list_adrs(ws.id)[0]
 
@@ -517,7 +532,7 @@ def test_update_file_success(storage, temp_git_repo):
 def test_update_file_dry_run(storage, temp_git_repo):
     ws, _ = _setup(storage, temp_git_repo)
     _write_adr(temp_git_repo, "docs/adr/0001-use-sqlite.md", VALID_1)
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     svc.reconcile(ws.id)
     adr = storage.list_adrs(ws.id)[0]
 
@@ -532,7 +547,7 @@ def test_update_file_rejects_legacy(storage, temp_git_repo):
         workspace_id=ws.id, repository_id=None, title="L",
         slug="l", status="proposed", category="", markdown="# L\n", tags=[],
     )
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     with pytest.raises(ADRCanonicalUpdateError):
         svc.update_file(adr.id, "# New\n")
 
@@ -552,7 +567,7 @@ def test_path_traversal_rejected_on_discovery(storage, temp_git_repo):
     outside.write_text(VALID_1)
     (docs / "adr" / "escape.md").symlink_to(outside)
 
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     s = svc.reconcile(ws.id)
     # The escape is skipped — nothing outside the repo root is scanned.
     assert s.scanned_files == 0
@@ -563,7 +578,7 @@ def test_path_traversal_rejected_on_discovery(storage, temp_git_repo):
 def test_canonical_path_traversal_rejected_on_update(storage, temp_git_repo):
     ws, _ = _setup(storage, temp_git_repo)
     _write_adr(temp_git_repo, "docs/adr/0001-use-sqlite.md", VALID_1)
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage, temp_git_repo)
     svc.reconcile(ws.id)
     adr = storage.list_adrs(ws.id)[0]
     # Tamper with the projection path directly (simulating corruption).
@@ -575,12 +590,12 @@ def test_canonical_path_traversal_rejected_on_update(storage, temp_git_repo):
 
 
 def test_missing_workspace_raises(storage):
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage)
     with pytest.raises(ADRNotFoundError):
         svc.reconcile("nope")
 
 
 def test_status_missing_workspace_raises(storage):
-    svc = ADRReconcileService(storage)
+    svc = _svc(storage)
     with pytest.raises(ADRNotFoundError):
         svc.status("nope")
