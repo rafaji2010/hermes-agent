@@ -33,7 +33,7 @@ plugins/workspace/
 │   │   └── search_service.py    # Global search
 │   ├── api/
 │   │   └── v1.py                # v1 REST endpoints
-│   ├── migrations/              # SQL migrations (001-005)
+│   ├── migrations/              # SQL migrations (001-007)
 │   ├── security/
 │   │   ├── exceptions.py        # Security exception hierarchy
 │   │   ├── models.py            # ContentLabel, CapabilityDef, AuditEvent
@@ -115,7 +115,63 @@ Capabilities with `approval_required=True` (tier 2/3) never execute automaticall
 | S7.2 — Project Scope & Authority Alignment | ✓ | 62 |
 | S7.2R — Repository Recovery & Baseline Restoration | ✓ | 451 (+8 desktop) |
 | S7.3A — Canonical ADR Reconciliation | ✓ | 71 (+7 desktop) |
-| S7.U1 — Upstream Hermes Reconciliation (U1A only) | U1A ✓ | 522 on modern upstream |
+| S7.U1 — Upstream Hermes Reconciliation | U1A ✓ · U1B ✓ · U1C ✓ | 522 backend; 35 desktop vitest |
+
+### S7.U1C — Desktop Plugin SDK & Runtime Adaptation
+
+The Workspace desktop plugin was migrated to the CURRENT upstream Hermes
+Desktop plugin boundary (`@hermes/plugin-sdk`). Commit: see
+`git log --oneline -3` on `workspace-integration`.
+
+- **SDK adoption.** All Workspace imports now come from `@hermes/plugin-sdk`
+  (+ react) or plugin-local relative modules. No `@/` application internals,
+  no direct `@tanstack/*` / `nanostores` / `@nanostores/react` imports. The
+  plugin directory was flattened to the current upstream convention (single
+  directory, like the Kanban plugin) because the plugin fence forbids
+  `../` relative imports.
+- **Session identity.** `host.state.activeSessionId` is a VOLATILE runtime
+  identity and is never sent as `session_id` — `SessionDB.get_session()`
+  keys on the durable stored id. Scope resolution uses only the sanctioned
+  `host.state.cwd` + `host.state.profile`.
+- **Scope authority.** The backend `ProjectScopeResolver` remains the
+  authority (`POST /v1/scope/resolve` with `cwd`); unresolved scope never
+  widens to a global query. Added explicit `unavailable` state + bounded
+  Retry; backfill now refreshes the cached scope and invalidates Workspace
+  queries so partial → scoped transitions land.
+- **REST transport.** All mutation wrappers pass plain object bodies —
+  `ctx.rest()` serializes them itself (pre-serialized JSON strings were
+  double-encoded on the wire).
+- **Navigation.** One contributed route (`/workspace`) per the current
+  one-segment route contract; all eight surfaces (overview, ADRs, journal,
+  roadmaps, tasks, search, analytics, assistant) switch through internal
+  navigation in `workspace-shell.tsx`.
+- **State re-home.** Request-shaped data lives in React Query keyed by the
+  effective workspace; module atoms are pure UI state only. Assistant
+  conversation state resets when the effective workspace changes.
+- **Component contracts.** `ConfirmDialog` callers use the current
+  `onClose` contract; local `MiniBar` gained the label it was passed;
+  `SearchField` uses `containerClassName`; Button/Badge variants updated.
+- **Graph scope.** Search/graph helpers transmit the effective workspace
+  scope on every call — no unscoped fallback.
+- **Verification.** `npm run typecheck` ✓ (0 errors), `npm run lint` ✓
+  (0 errors in the plugin), `npm run test:ui` ✓ (35/35 Workspace tests;
+  3322/3323 suite-wide — the single failure is a pre-existing
+  timing-sensitive property-fuzz test in `src/lib/markdown-blocks.test.ts`
+  that passes in isolation), `npm run build` ✓.
+- **Smoke.** Production Electron booted the renderer without exceptions;
+  the app then stalls at its interactive first-run setup choice because a
+  source checkout has no managed `hermes` runtime (host/environment
+  condition; `--no-sandbox` used as the known environment workaround).
+  Backend plugin API mounting (incl. `/api/plugins/workspace/`) was
+  verified live; the backend is untouched by U1C.
+
+Remaining U1D issues (backend, out of U1C scope): profile-scoped
+database/service singletons, SQLite concurrency + migration locking, WAL
+fallback conventions, API authorization hardening, approval/audit
+alignment with Hermes host primitives, ADR reconciliation hardening,
+backup/profile-distribution coverage for `workspace.db`.
+
+**Next: S7.U1D — Workspace backend integration verification.**
 
 ### S7.U1A — Upstream Baseline & Workspace Platform Transplant
 
@@ -130,10 +186,10 @@ lockfile kept). `workspace-plugin@5bcd9edee` + `stash@{0}` untouched.
 
 Backend baseline on modern upstream: **522/522 tests pass** (fresh
 `uv sync --extra dev`; pytest 9.1.1) — zero backend adaptation needed.
-Frontend baseline toolchain-blocked (Node >=22.22 required; machine has
-Node 20.20.2) — U1C prerequisite.
+Frontend baseline was toolchain-blocked on the old host Node; resolved with
+Node v22.23.2 / npm v12.0.2 for U1C.
 
-**Next: S7.U1B — Core/API Compatibility.**
+**Next (as of U1A): S7.U1B — Core/API Compatibility.**
 
 ### S7.3A — Canonical ADR Reconciliation
 

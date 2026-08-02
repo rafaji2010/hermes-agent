@@ -4,7 +4,8 @@ import {
   EMPTY_SCOPE,
   scopeQueryParams,
   scopeReady,
-  workspaceScopeFromResolution
+  workspaceScopeFromResolution,
+  workspaceScopeUnavailable,
 } from './scope'
 
 describe('workspaceScopeFromResolution', () => {
@@ -99,5 +100,50 @@ describe('scopeReady', () => {
     expect(scopeReady(EMPTY_SCOPE)).toBe(false)
     expect(scopeReady({ ...EMPTY_SCOPE, state: 'checking' })).toBe(false)
     expect(scopeReady({ ...EMPTY_SCOPE, state: 'scoped', workspaceId: '' })).toBe(false)
+  })
+})
+
+describe('workspaceScopeUnavailable', () => {
+  it('produces an unavailable scope carrying the transport error', () => {
+    const scope = workspaceScopeUnavailable('backend down')
+
+    expect(scope.state).toBe('unavailable')
+    expect(scope.error).toBe('backend down')
+    expect(scope.workspaceId).toBe('')
+  })
+
+  it('never reports ready or a query scope while unavailable', () => {
+    const scope = workspaceScopeUnavailable('backend down')
+
+    expect(scopeReady(scope)).toBe(false)
+    expect(scopeQueryParams(scope)).toEqual({})
+  })
+})
+
+describe('WorkspaceScope U1C fields', () => {
+  it('resolution scopes carry the sanctioned cwd/profile/error/retrying fields', () => {
+    const scope = workspaceScopeFromResolution({
+      workspace_id: 'abc123',
+      workspace_name: 'main',
+      project_id: 'p_1234',
+      project_slug: null,
+      state: 'mapped',
+      match_source: 'mapping',
+      matched_path: '',
+    })
+
+    expect(scope).toMatchObject({
+      state: 'scoped',
+      workspaceId: 'abc123',
+      cwd: '',
+      profile: '',
+      error: '',
+      retrying: false,
+    })
+  })
+
+  it('the empty scope is never queryable', () => {
+    expect(scopeReady(EMPTY_SCOPE)).toBe(false)
+    expect(scopeQueryParams(EMPTY_SCOPE)).toEqual({})
   })
 })

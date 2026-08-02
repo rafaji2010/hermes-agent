@@ -1,23 +1,27 @@
 /**
- * Search Page — global search, filters, relationship panel, entity preview.
+ * Search Page — workspace-scoped search, filters, relationship panel.
+ *
+ * U1C: the resolved project scope is the single source of truth; every
+ * search/graph/related request carries the effective workspace scope and is
+ * gated on it — requests never silently fall back to a global query.
  */
 
-import { useQuery } from '@tanstack/react-query'
-import { useStore } from '@nanostores/react'
+import {
+  Badge,
+  Button,
+  cn,
+  Contribute,
+  EmptyState,
+  Loader,
+  type PluginContext,
+  useQuery,
+} from '@hermes/plugin-sdk'
 import { useCallback, useState } from 'react'
 
-import { Contribute } from '@/contrib/react/contribute'
-import type { PluginContext } from '@/contrib/plugin'
-import { Button } from '@/components/ui/button'
-import { Loader } from '@/components/ui/loader'
-import { EmptyState } from '@/components/ui/empty-state'
-import { Badge } from '@/components/ui/badge'
-import { cn } from '@/lib/utils'
-
-import { $searchResults, $relatedItems, type SearchResult, type RelatedEntity } from './stores/search'
-import { search, getRelated } from './lib/search-api'
+import { scopeReady, useWorkspaceScope } from './scope'
 import { WorkspaceScopeNotice } from './scope-notice'
-import { scopeReady, useWorkspaceScope } from './stores/scope'
+import type { RelatedEntity, SearchResult } from './search'
+import { getRelated, search } from './search-api'
 
 // ---------------------------------------------------------------------------
 // Type colors
@@ -62,26 +66,31 @@ function PageTitlebar() {
 
 interface RelationshipPanelProps {
   entity: SearchResult
+  workspaceId: string
   ctx: PluginContext
 }
 
-function RelationshipPanel({ entity, ctx }: RelationshipPanelProps) {
+function RelationshipPanel({ entity, workspaceId, ctx }: RelationshipPanelProps) {
   const [items, setItems] = useState<RelatedEntity[]>([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
 
   const handleToggle = useCallback(async () => {
-    if (open) { setOpen(false); return }
+    if (open) { setOpen(false);
+
+ return }
+
     setOpen(true)
     setLoading(true)
+
     try {
-      const r = await getRelated(ctx, entity.type, entity.id)
-      $relatedItems.set(r.items)
+      // The related-entity request is workspace-scoped — never global.
+      const r = await getRelated(ctx, entity.type, entity.id, workspaceId)
       setItems(r.items)
     } finally {
       setLoading(false)
     }
-  }, [ctx, entity, open])
+  }, [ctx, entity, workspaceId, open])
 
   return (
     <div>
@@ -98,7 +107,7 @@ function RelationshipPanel({ entity, ctx }: RelationshipPanelProps) {
             <div className="text-xs text-(--ui-text-tertiary)">No related items found.</div>
           ) : (
             items.map(item => (
-              <div key={`${item.type}:${item.id}`} className="flex items-center gap-2 text-xs py-1">
+              <div className="flex items-center gap-2 text-xs py-1" key={`${item.type}:${item.id}`}>
                 <span className={cn('px-1.5 py-0.5 rounded text-[10px] font-medium', TYPE_COLORS[item.type] || 'bg-gray-500/10')}>
                   {item.type}
                 </span>
@@ -124,10 +133,11 @@ function RelationshipPanel({ entity, ctx }: RelationshipPanelProps) {
 
 interface ResultCardProps {
   result: SearchResult
+  workspaceId: string
   ctx: PluginContext
 }
 
-function ResultCard({ result, ctx }: ResultCardProps) {
+function ResultCard({ result, workspaceId, ctx }: ResultCardProps) {
   return (
     <div className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-secondary) p-4 space-y-2">
       <div className="flex items-start justify-between gap-2">
@@ -158,11 +168,11 @@ function ResultCard({ result, ctx }: ResultCardProps) {
           </span>
         )}
         {result.labels.map(l => (
-          <Badge key={l} variant="secondary">{l}</Badge>
+          <Badge key={l} variant="muted">{l}</Badge>
         ))}
       </div>
 
-      <RelationshipPanel entity={result} ctx={ctx} />
+      <RelationshipPanel ctx={ctx} entity={result} workspaceId={workspaceId} />
     </div>
   )
 }
@@ -180,32 +190,29 @@ export function SearchPage({ ctx }: SearchPageProps) {
   const [query, setQuery] = useState('')
   const [typeFilter, setTypeFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
-  const [workspaceId, setWorkspaceId] = useState(scope.workspaceId)
 
-  // The resolved project scope seeds the scope input; a manual entry
-  // remains an explicit override for tooling/debug use.
-  const effectiveWs = workspaceId || (scopeReady(scope) ? scope.workspaceId : '')
+  // The resolved project scope is authoritative. An unresolvable scope
+  // yields '' and gates every query off.
+  const ws = scopeReady(scope) ? scope.workspaceId : ''
 
   const searchQuery = useQuery({
-    queryKey: ['workspace', 'search', query, typeFilter, statusFilter, effectiveWs],
+    queryKey: ['workspace', 'search', query, typeFilter, statusFilter, ws],
     queryFn: async () => {
-      if (!query && !typeFilter && !statusFilter) return { results: [], total: 0, query: '', filters: {} }
-      const r = await search(ctx, {
+      if (!query && !typeFilter && !statusFilter) {return { results: [], total: 0, query: '', filters: {} }}
+
+      return search(ctx, {
         q: query,
         type: typeFilter || undefined,
         status: statusFilter || undefined,
-        workspace_id: effectiveWs,
+        workspace_id: ws,
         limit: 50,
       })
-      $searchResults.set(r.results)
-      return r
     },
     staleTime: 0,
-    enabled: (!!query || !!typeFilter || !!statusFilter) && Boolean(effectiveWs),
+    enabled: (!!query || !!typeFilter || !!statusFilter) && Boolean(ws),
   })
 
-  const results = useStore($searchResults)
-  const data = searchQuery.data
+  const results = searchQuery.data?.results ?? []
 
   return (
     <div className="flex h-full flex-col">
@@ -220,17 +227,17 @@ export function SearchPage({ ctx }: SearchPageProps) {
           <div className="flex items-center gap-3">
             <input
               className="flex-1 rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-3 py-2 text-sm text-(--ui-text-primary) outline-none focus:border-(--ui-stroke-focus)"
+              onChange={e => setQuery(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') {void searchQuery.refetch()} }}
               placeholder='Search... (e.g. "auth" or "status:blocked type:task")'
               value={query}
-              onChange={e => setQuery(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') searchQuery.refetch() }}
             />
           </div>
           <div className="flex items-center gap-3">
             <select
               className="rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-2 py-1 text-xs text-(--ui-text-primary)"
-              value={typeFilter}
               onChange={e => setTypeFilter(e.target.value)}
+              value={typeFilter}
             >
               <option value="">All Types</option>
               <option value="workspace">Workspace</option>
@@ -243,8 +250,8 @@ export function SearchPage({ ctx }: SearchPageProps) {
             </select>
             <select
               className="rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-2 py-1 text-xs text-(--ui-text-primary)"
-              value={statusFilter}
               onChange={e => setStatusFilter(e.target.value)}
+              value={statusFilter}
             >
               <option value="">Any Status</option>
               <option value="todo">To Do</option>
@@ -254,38 +261,34 @@ export function SearchPage({ ctx }: SearchPageProps) {
               <option value="proposed">Proposed</option>
               <option value="accepted">Accepted</option>
             </select>
-            <input
-              className="rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-2 py-1 text-xs text-(--ui-text-primary) w-40 outline-none"
-              placeholder="Workspace ID"
-              value={workspaceId}
-              onChange={e => setWorkspaceId(e.target.value)}
-            />
             <Button
-              disabled={searchQuery.isFetching}
-              onClick={() => searchQuery.refetch()}
+              disabled={searchQuery.isFetching || !ws}
+              onClick={() => void searchQuery.refetch()}
               size="xs"
               variant="secondary"
             >
               {searchQuery.isFetching ? 'Searching...' : 'Search'}
             </Button>
-            {data && data.total > 0 && (
+            {searchQuery.data && searchQuery.data.total > 0 && (
               <span className="text-xs text-(--ui-text-tertiary)">
-                {data.total} results
+                {searchQuery.data.total} results
               </span>
             )}
           </div>
         </div>
 
         <div className="px-8 py-6 space-y-4">
-          {!query && !typeFilter && !statusFilter ? (
-            <EmptyState description="Enter a query or select filters to search across all entities." title="Global Search" />
+          {!ws ? (
+            <EmptyState description="No workspace scope resolved — search never falls back to global." title="Scope required" />
+          ) : !query && !typeFilter && !statusFilter ? (
+            <EmptyState description="Enter a query or select filters to search across all entities." title="Workspace Search" />
           ) : searchQuery.isLoading ? (
             <div className="flex justify-center py-12"><Loader type="lemniscate-bloom" /></div>
           ) : results.length === 0 ? (
             <EmptyState description="No results found. Try different search terms or filters." title="No results" />
           ) : (
             results.map(r => (
-              <ResultCard key={`${r.type}:${r.id}`} result={r} ctx={ctx} />
+              <ResultCard ctx={ctx} key={`${r.type}:${r.id}`} result={r} workspaceId={ws} />
             ))
           )}
         </div>

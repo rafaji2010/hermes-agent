@@ -1,8 +1,6 @@
 /**
- * Search nanostores — reactive state for global search UI.
+ * Search nanostores — types for workspace-scoped search UI.
  */
-
-import { atom } from 'nanostores'
 
 export interface SearchResult {
   id: string
@@ -47,8 +45,5 @@ export interface GraphEdge {
   relationship: string
 }
 
-export const $searchResults = atom<SearchResult[]>([])
-export const $searchQuery = atom<string>('')
-export const $searchFilters = atom<string>('')
-export const $relatedItems = atom<RelatedEntity[]>([])
-export const $selectedEntity = atom<SearchResult | null>(null)
+// No atoms here: request-shaped data (results, related items, graph) lives
+// in React Query — see search-page.tsx.

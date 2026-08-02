@@ -2,19 +2,21 @@
  * ADR Detail — read-only view of a single ADR with markdown body.
  */
 
+import {
+  Button,
+  cn,
+  Codicon,
+  type PluginContext,
+} from '@hermes/plugin-sdk'
 import { useCallback, useState } from 'react'
 
-import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
-import { cn } from '@/lib/utils'
-
-import { materializeADR } from './lib/adr-api'
+import { materializeADR } from './adr-api'
 import {
+  type ADR,
   adrReconcileLabel,
   adrReconcileTone,
   isLegacyADR,
-  type ADR,
-} from './stores/adrs'
+} from './adrs'
 
 const STATUS_COLORS: Record<string, string> = {
   proposed: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20',
@@ -33,7 +35,7 @@ export function ADRDetail({
   onChanged,
 }: {
   adr: ADR
-  ctx: import('@/contrib/plugin').PluginContext
+  ctx: PluginContext
   workspaceId: string
   onDelete: () => void
   onEdit: () => void
@@ -46,14 +48,18 @@ export function ADRDetail({
   const handleMaterialize = useCallback(async () => {
     setMaterializing(true)
     setMaterializeMsg('')
+
     try {
       // Inspection-first: preview what would be written.
       const preview = await materializeADR(ctx, adr.id, true, workspaceId)
+
       if (preview.status === 'preview') {
         setMaterializeMsg(`Preview: would write ${preview.target_path}.`)
       }
+
       // Explicit apply.
       const result = await materializeADR(ctx, adr.id, false, workspaceId)
+
       if (result.status === 'materialized') {
         setMaterializeMsg(`Materialized to ${result.target_path}.`)
         onChanged()
@@ -145,8 +151,8 @@ export function ADRDetail({
         <div className="mb-4 flex flex-wrap gap-1">
           {adr.tags.map(t => (
             <span
-              key={t}
               className="rounded bg-(--ui-bg-quaternary) px-1.5 py-px text-[10px] text-(--ui-text-tertiary)"
+              key={t}
             >
               {t}
             </span>

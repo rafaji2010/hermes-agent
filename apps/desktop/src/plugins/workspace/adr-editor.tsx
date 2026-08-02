@@ -2,19 +2,27 @@
  * ADR Editor — create or edit an Architecture Decision Record.
  */
 
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  Input,
+  type PluginContext,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Separator,
+  Textarea,
+} from '@hermes/plugin-sdk'
 import { useCallback, useState } from 'react'
 
-import type { PluginContext } from '@/contrib/plugin'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Textarea } from '@/components/ui/textarea'
-import { Separator } from '@/components/ui/separator'
-
-import type { ADR } from './stores/adrs'
-import { isCanonicalADR } from './stores/adrs'
-import { createADR, updateADR, updateADRFile } from './lib/adr-api'
+import { createADR, updateADR, updateADRFile } from './adr-api'
+import type { ADR } from './adrs'
+import { isCanonicalADR } from './adrs'
 
 interface ADREditorProps {
   adr: ADR | null
@@ -39,10 +47,13 @@ export function ADREditor({ adr, ctx, onClose, onSaved, workspaceId }: ADREditor
   const handleSave = useCallback(async () => {
     if (!title.trim()) {
       setError('Title is required.')
+
       return
     }
+
     setSaving(true)
     setError(null)
+
     try {
       const tags = tagsInput
         .split(',')
@@ -73,6 +84,7 @@ export function ADREditor({ adr, ctx, onClose, onSaved, workspaceId }: ADREditor
           tags,
         })
       }
+
       onSaved()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save ADR.')

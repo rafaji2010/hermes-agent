@@ -1,23 +1,29 @@
 /**
  * Analytics Page — dashboards, trends, insights, export.
+ *
+ * U1C: analytics data comes from React Query, keyed by the resolved
+ * workspace scope; export uses the existing backend endpoint through
+ * `ctx.rest` and a renderer-side download flow (no raw `window.open`).
  */
 
-import { useQuery } from '@tanstack/react-query'
-import { useStore } from '@nanostores/react'
+import {
+  Button,
+  cn,
+  Contribute,
+  EmptyState,
+  ErrorState,
+  Loader,
+  type PluginContext,
+  useQuery,
+  useValue,
+} from '@hermes/plugin-sdk'
 import { useCallback } from 'react'
+import type { ReactNode } from 'react'
 
-import { Contribute } from '@/contrib/react/contribute'
-import type { PluginContext } from '@/contrib/plugin'
-import { Button } from '@/components/ui/button'
-import { Loader } from '@/components/ui/loader'
-import { ErrorState } from '@/components/ui/error-state'
-import { EmptyState } from '@/components/ui/empty-state'
-import { cn } from '@/lib/utils'
-
-import { $analytics, $trends, $insights, $trendPeriod } from './stores/analytics'
-import { fetchAnalytics, fetchTrends, fetchInsights } from './lib/analytics-api'
+import { $trendPeriod } from './analytics'
+import { exportAnalytics, fetchAnalytics, fetchInsights, fetchTrends } from './analytics-api'
+import { scopeReady, useWorkspaceScope } from './scope'
 import { WorkspaceScopeNotice } from './scope-notice'
-import { scopeReady, useWorkspaceScope } from './stores/scope'
 
 // ---------------------------------------------------------------------------
 // Titlebar
@@ -37,7 +43,7 @@ function PageTitlebar() {
 // Shared components
 // ---------------------------------------------------------------------------
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-secondary) p-5">
       <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">
@@ -77,6 +83,7 @@ function InsightBadge({ type, title, description }: { type: string; title: strin
     info: 'bg-blue-500/10 border-blue-500/20 text-blue-400',
     success: 'bg-green-500/10 border-green-500/20 text-green-400',
   }
+
   return (
     <div className={cn('rounded border p-3', colors[type] || 'bg-gray-500/10 border-gray-500/20')}>
       <div className="text-sm font-medium">{title}</div>
@@ -85,10 +92,17 @@ function InsightBadge({ type, title, description }: { type: string; title: strin
   )
 }
 
-function MiniBar({ value, max = 100, color = 'bg-green-500' }: { value: number; max?: number; color?: string }) {
+function MiniBar({
+  label,
+  value,
+  max = 100,
+  color = 'bg-green-500',
+}: { label?: string; value: number; max?: number; color?: string }) {
   const pct = Math.min(100, Math.max(0, (value / max) * 100))
+
   return (
     <div className="flex items-center gap-2">
+      {label && <span className="w-24 shrink-0 truncate text-xs text-(--ui-text-tertiary)">{label}</span>}
       <div className="h-2 flex-1 rounded-full bg-(--ui-bg-quaternary)">
         <div className={cn('h-2 rounded-full transition-all', color)} style={{ width: `${pct}%` }} />
       </div>
@@ -106,54 +120,55 @@ interface AnalyticsPageProps {
 }
 
 export function AnalyticsPage({ ctx }: AnalyticsPageProps) {
-  const trendPeriod = useStore($trendPeriod)
+  const trendPeriod = useValue($trendPeriod)
   const scope = useWorkspaceScope(ctx)
+  // The resolved project scope is authoritative. An unresolvable scope
+  // yields '' and gates every query off.
   const ws = scopeReady(scope) ? scope.workspaceId : ''
 
   const analyticsQ = useQuery({
     queryKey: ['workspace', 'analytics', ws],
-    queryFn: async () => {
-      const d = await fetchAnalytics(ctx, ws)
-      $analytics.set(d)
-      return d
-    },
+    queryFn: () => fetchAnalytics(ctx, ws),
     enabled: Boolean(ws),
     staleTime: 15000,
   })
 
   const trendsQ = useQuery({
     queryKey: ['workspace', 'trends', trendPeriod, ws],
-    queryFn: async () => {
-      const d = await fetchTrends(ctx, trendPeriod, ws)
-      $trends.set(d)
-      return d
-    },
+    queryFn: () => fetchTrends(ctx, trendPeriod, ws),
     staleTime: 15000,
     enabled: !!analyticsQ.data,
   })
 
   const insightsQ = useQuery({
     queryKey: ['workspace', 'insights', ws],
-    queryFn: async () => {
-      const d = await fetchInsights(ctx, ws)
-      $insights.set(d.insights)
-      return d
-    },
+    queryFn: () => fetchInsights(ctx, ws),
     staleTime: 15000,
     enabled: !!analyticsQ.data,
   })
 
-  const data = useStore($analytics)
-  const trends = useStore($trends)
-  const insights = useStore($insights)
+  const data = analyticsQ.data
+  const trends = trendsQ.data
+  const insights = insightsQ.data?.insights ?? []
 
-  const handleExport = useCallback((format: string) => {
-    const targ = `/api/plugins/workspace/v1/analytics/export?workspace_id=${encodeURIComponent(ws)}`
-    const w = window.open('', '_blank')
-    if (w) {
-      w.document.write(`<pre>Exporting ${format}... (open /v1/analytics/export POST with {"format":"${format}"})</pre>`)
+  const handleExport = useCallback(async (format: string) => {
+    if (!ws) {return}
+
+    try {
+      // The backend export endpoint is workspace-scoped and POST-only; the
+      // returned text is downloaded renderer-side.
+      const text = await exportAnalytics(ctx, format, ['all'], ws)
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `workspace-analytics.${format}`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      // Export failures are surfaced silently — the button stays usable.
     }
-  }, [ws])
+  }, [ctx, ws])
 
   if (analyticsQ.isError && !data) {
     return (
@@ -162,7 +177,7 @@ export function AnalyticsPage({ ctx }: AnalyticsPageProps) {
         <WorkspaceScopeNotice ctx={ctx} scope={scope} />
         <div className="flex flex-1 items-center justify-center">
           <ErrorState description="Failed to load analytics." title="Error">
-            <Button onClick={() => analyticsQ.refetch()} size="sm" variant="outline">Retry</Button>
+            <Button onClick={() => void analyticsQ.refetch()} size="sm" variant="outline">Retry</Button>
           </ErrorState>
         </div>
       </div>
@@ -202,7 +217,7 @@ export function AnalyticsPage({ ctx }: AnalyticsPageProps) {
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-8 py-3">
           <span className="text-sm font-medium text-(--ui-text-primary)">Engineering Analytics</span>
           <div className="flex items-center gap-3">
-            <Button onClick={() => analyticsQ.refetch()} size="xs" variant="secondary">Refresh</Button>
+            <Button onClick={() => void analyticsQ.refetch()} size="xs" variant="secondary">Refresh</Button>
           </div>
         </div>
 
@@ -210,9 +225,9 @@ export function AnalyticsPage({ ctx }: AnalyticsPageProps) {
           {/* ── Overview KPIs ─────────────────────────────── */}
           <div className="grid grid-cols-4 gap-4">
             <KPI label="Total Tasks" value={data.tasks.total} />
-            <KPI label="Open Tasks" value={data.tasks.open} color="text-blue-500" />
-            <KPI label="Blocked" value={data.tasks.blocked} color="text-red-500" />
-            <KPI label="Overdue" value={data.tasks.overdue} color="text-orange-500" />
+            <KPI color="text-blue-500" label="Open Tasks" value={data.tasks.open} />
+            <KPI color="text-red-500" label="Blocked" value={data.tasks.blocked} />
+            <KPI color="text-orange-500" label="Overdue" value={data.tasks.overdue} />
           </div>
 
           <div className="grid grid-cols-2 gap-6">
@@ -220,26 +235,26 @@ export function AnalyticsPage({ ctx }: AnalyticsPageProps) {
             <Section title="Roadmaps">
               <div className="grid grid-cols-3 gap-3 mb-3">
                 <KPI label="Total" value={data.roadmaps.total} />
-                <KPI label="Active" value={data.roadmaps.active} color="text-blue-500" />
-                <KPI label="Completed" value={data.roadmaps.completed} color="text-green-500" />
+                <KPI color="text-blue-500" label="Active" value={data.roadmaps.active} />
+                <KPI color="text-green-500" label="Completed" value={data.roadmaps.completed} />
               </div>
               <StatRow label="Avg Progress" value={`${data.roadmaps.avg_progress}%`} />
               <StatRow label="Milestones" value={data.roadmaps.total_milestones} />
-              <MiniBar label="Completed" value={data.roadmaps.milestones_completed} color="bg-green-500" />
-              <MiniBar label="In Progress" value={data.roadmaps.milestones_in_progress} color="bg-blue-500" />
-              <MiniBar label="Blocked" value={data.roadmaps.milestones_blocked} color="bg-red-500" />
+              <MiniBar color="bg-green-500" label="Completed" value={data.roadmaps.milestones_completed} />
+              <MiniBar color="bg-blue-500" label="In Progress" value={data.roadmaps.milestones_in_progress} />
+              <MiniBar color="bg-red-500" label="Blocked" value={data.roadmaps.milestones_blocked} />
             </Section>
 
             {/* ── Tasks ────────────────────────────────────── */}
             <Section title="Tasks">
               <div className="grid grid-cols-3 gap-3 mb-3">
                 <KPI label="Total" value={data.tasks.total} />
-                <KPI label="Completed" value={data.tasks.completed} color="text-green-500" />
-                <KPI label="Overdue" value={data.tasks.overdue} color="text-orange-500" />
+                <KPI color="text-green-500" label="Completed" value={data.tasks.completed} />
+                <KPI color="text-orange-500" label="Overdue" value={data.tasks.overdue} />
               </div>
               <div className="space-y-1">
                 {Object.entries(data.tasks.by_status).map(([k, v]) => (
-                  <MiniBar key={k} label={k} value={v} max={data.tasks.total} />
+                  <MiniBar key={k} label={k} max={data.tasks.total} value={v} />
                 ))}
               </div>
             </Section>
@@ -257,7 +272,7 @@ export function AnalyticsPage({ ctx }: AnalyticsPageProps) {
               <StatRow label="Total" value={data.adrs.total} />
               <StatRow label="Recently Added" value={`${data.adrs.recently_added} (30d)`} />
               {Object.entries(data.adrs.by_status).map(([k, v]) => (
-                <MiniBar key={k} label={k} value={v} max={data.adrs.total} />
+                <MiniBar key={k} label={k} max={data.adrs.total} value={v} />
               ))}
             </Section>
 
@@ -282,9 +297,9 @@ export function AnalyticsPage({ ctx }: AnalyticsPageProps) {
               {[7, 30, 90].map(d => (
                 <Button
                   key={d}
-                  size="xs"
-                  variant={trendPeriod === d ? 'primary' : 'secondary'}
                   onClick={() => $trendPeriod.set(d)}
+                  size="xs"
+                  variant={trendPeriod === d ? 'default' : 'secondary'}
                 >
                   {d}d
                 </Button>
@@ -297,7 +312,7 @@ export function AnalyticsPage({ ctx }: AnalyticsPageProps) {
                     <div className="text-xs text-(--ui-text-tertiary) mb-1">Task Completions</div>
                     <div className="flex gap-0.5 h-8 items-end">
                       {trends.task_completion.map((p, i) => (
-                        <div key={i} className="flex-1 bg-(--ui-bg-quaternary) relative rounded-t" title={`${p.date}: ${p.value}`}>
+                        <div className="flex-1 bg-(--ui-bg-quaternary) relative rounded-t" key={i} title={`${p.date}: ${p.value}`}>
                           <div
                             className="absolute bottom-0 left-0 right-0 bg-green-500/60"
                             style={{ height: `${Math.min(100, (p.value / maxTrendVal) * 100)}%` }}
@@ -312,7 +327,7 @@ export function AnalyticsPage({ ctx }: AnalyticsPageProps) {
                     <div className="text-xs text-(--ui-text-tertiary) mb-1">Journal Activity</div>
                     <div className="flex gap-0.5 h-8 items-end">
                       {trends.journal_activity.map((p, i) => (
-                        <div key={i} className="flex-1 bg-(--ui-bg-quaternary) relative rounded-t" title={`${p.date}: ${p.value}`}>
+                        <div className="flex-1 bg-(--ui-bg-quaternary) relative rounded-t" key={i} title={`${p.date}: ${p.value}`}>
                           <div
                             className="absolute bottom-0 left-0 right-0 bg-blue-500/60"
                             style={{ height: `${Math.min(100, (p.value / maxTrendVal) * 100)}%` }}
@@ -333,7 +348,7 @@ export function AnalyticsPage({ ctx }: AnalyticsPageProps) {
             ) : (
               <div className="space-y-2">
                 {insights.map((ins, i) => (
-                  <InsightBadge key={i} type={ins.type} title={ins.title} description={ins.description} />
+                  <InsightBadge description={ins.description} key={i} title={ins.title} type={ins.type} />
                 ))}
               </div>
             )}
@@ -342,9 +357,9 @@ export function AnalyticsPage({ ctx }: AnalyticsPageProps) {
           {/* ── Export ─────────────────────────────────────── */}
           <Section title="Export">
             <div className="flex gap-3">
-              <Button onClick={() => handleExport('markdown')} size="xs" variant="secondary">Markdown</Button>
-              <Button onClick={() => handleExport('json')} size="xs" variant="secondary">JSON</Button>
-              <Button onClick={() => handleExport('csv')} size="xs" variant="secondary">CSV</Button>
+              <Button onClick={() => void handleExport('markdown')} size="xs" variant="secondary">Markdown</Button>
+              <Button onClick={() => void handleExport('json')} size="xs" variant="secondary">JSON</Button>
+              <Button onClick={() => void handleExport('csv')} size="xs" variant="secondary">CSV</Button>
             </div>
           </Section>
         </div>

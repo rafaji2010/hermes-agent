@@ -2,7 +2,7 @@
  * ADR nanostores — reactive state for the ADR management UI.
  */
 
-import { atom } from 'nanostores'
+import { atom } from '@hermes/plugin-sdk'
 
 // ---------------------------------------------------------------------------
 // Types (mirrors backend models)
@@ -110,18 +110,26 @@ export function adrReconcileLabel(state: string): string {
     conflict: 'conflict',
     invalid: 'invalid',
   }
+
   return labels[state] ?? state
 }
 
 export function adrReconcileSummaryMessage(summary: ADRReconcileSummary | null): string {
-  if (!summary) return ''
+  if (!summary) {return ''}
   const parts: string[] = []
-  if (summary.indexed > 0) parts.push(`${summary.indexed} indexed`)
-  if (summary.synced > 0) parts.push(`${summary.synced} synced`)
-  if (summary.file_changed > 0) parts.push(`${summary.file_changed} refreshed`)
-  if (summary.db_legacy > 0) parts.push(`${summary.db_legacy} legacy`)
-  if (summary.conflict > 0) parts.push(`${summary.conflict} conflict`)
-  if (summary.invalid > 0) parts.push(`${summary.invalid} invalid`)
+
+  if (summary.indexed > 0) {parts.push(`${summary.indexed} indexed`)}
+
+  if (summary.synced > 0) {parts.push(`${summary.synced} synced`)}
+
+  if (summary.file_changed > 0) {parts.push(`${summary.file_changed} refreshed`)}
+
+  if (summary.db_legacy > 0) {parts.push(`${summary.db_legacy} legacy`)}
+
+  if (summary.conflict > 0) {parts.push(`${summary.conflict} conflict`)}
+
+  if (summary.invalid > 0) {parts.push(`${summary.invalid} invalid`)}
+
   return parts.join(', ') || 'no changes'
 }
 
@@ -146,11 +154,9 @@ export interface ADRUpdatePayload {
 export type ADRStatus = 'proposed' | 'accepted' | 'rejected' | 'superseded' | 'deprecated'
 
 // ---------------------------------------------------------------------------
-// Atoms
+// Atoms — pure UI state only. Request-shaped data lives in React Query.
 // ---------------------------------------------------------------------------
 
-export const $adrs = atom<ADR[]>([])
-export const $selectedADRId = atom<string | null>(null)
 export const $adrSearchQuery = atom<string>('')
 export const $adrStatusFilter = atom<ADRStatus | ''>('')
 export const $adrCategoryFilter = atom<string>('')

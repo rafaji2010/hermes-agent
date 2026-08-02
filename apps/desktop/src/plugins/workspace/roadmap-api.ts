@@ -1,8 +1,12 @@
 /**
  * Roadmap API — REST wrappers for roadmap + milestone endpoints.
+ *
+ * U1C: every mutation passes a plain object body — `ctx.rest()` serializes
+ * it itself.  Get-by-id helpers carry the effective workspace scope.
  */
 
-import type { PluginContext } from '@/contrib/plugin'
+import type { PluginContext } from '@hermes/plugin-sdk'
+
 import type {
   MilestoneCreatePayload,
   MilestoneListResponse,
@@ -10,7 +14,7 @@ import type {
   RoadmapCreatePayload,
   RoadmapListResponse,
   RoadmapUpdatePayload,
-} from '../stores/roadmaps'
+} from './roadmaps'
 
 export async function fetchRoadmaps(
   ctx: PluginContext,
@@ -24,8 +28,11 @@ export async function fetchRoadmaps(
 export async function getRoadmap(
   ctx: PluginContext,
   roadmapId: string,
+  workspaceId = '',
 ): Promise<RoadmapListResponse> {
-  return ctx.rest<RoadmapListResponse>(`/v1/roadmaps/${encodeURIComponent(roadmapId)}`)
+  const scope = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : ''
+
+  return ctx.rest<RoadmapListResponse>(`/v1/roadmaps/${encodeURIComponent(roadmapId)}${scope}`)
 }
 
 export async function createRoadmap(
@@ -34,7 +41,7 @@ export async function createRoadmap(
 ): Promise<RoadmapListResponse> {
   return ctx.rest<RoadmapListResponse>('/v1/roadmaps', {
     method: 'POST',
-    body: JSON.stringify(payload),
+    body: payload,
   })
 }
 
@@ -45,7 +52,7 @@ export async function updateRoadmap(
 ): Promise<RoadmapListResponse> {
   return ctx.rest<RoadmapListResponse>(`/v1/roadmaps/${encodeURIComponent(roadmapId)}`, {
     method: 'PUT',
-    body: JSON.stringify(payload),
+    body: payload,
   })
 }
 
@@ -65,9 +72,12 @@ export async function deleteRoadmap(
 export async function fetchMilestones(
   ctx: PluginContext,
   roadmapId: string,
+  workspaceId = '',
 ): Promise<MilestoneListResponse> {
+  const scope = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : ''
+
   return ctx.rest<MilestoneListResponse>(
-    `/v1/roadmaps/${encodeURIComponent(roadmapId)}/milestones`,
+    `/v1/roadmaps/${encodeURIComponent(roadmapId)}/milestones${scope}`,
   )
 }
 
@@ -80,7 +90,7 @@ export async function createMilestone(
     `/v1/roadmaps/${encodeURIComponent(roadmapId)}/milestones`,
     {
       method: 'POST',
-      body: JSON.stringify(payload),
+      body: payload,
     },
   )
 }
@@ -95,7 +105,7 @@ export async function updateMilestone(
     `/v1/roadmaps/${encodeURIComponent(roadmapId)}/milestones/${encodeURIComponent(milestoneId)}`,
     {
       method: 'PUT',
-      body: JSON.stringify(payload),
+      body: payload,
     },
   )
 }
@@ -120,7 +130,7 @@ export async function reorderMilestones(
     `/v1/roadmaps/${encodeURIComponent(roadmapId)}/milestones/reorder`,
     {
       method: 'PUT',
-      body: JSON.stringify({ ids }),
+      body: { ids },
     },
   )
 }

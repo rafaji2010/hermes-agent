@@ -1,42 +1,42 @@
 /**
  * Roadmaps Page — browse, create, edit, delete roadmaps and milestones.
+ *
+ * U1C: the resolved project scope is the single source of truth for the
+ * workspace; roadmap/milestone data comes from React Query, keyed by
+ * roadmap/workspace — no shared cross-workspace atoms.
  */
 
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useStore } from '@nanostores/react'
-import { useCallback, useState } from 'react'
-
-import { Contribute } from '@/contrib/react/contribute'
-import type { PluginContext } from '@/contrib/plugin'
-import { Button } from '@/components/ui/button'
-import { ErrorState } from '@/components/ui/error-state'
-import { Loader } from '@/components/ui/loader'
-import { ConfirmDialog } from '@/components/ui/confirm-dialog'
-import { EmptyState } from '@/components/ui/empty-state'
-import { Badge } from '@/components/ui/badge'
-import { cn } from '@/lib/utils'
+import {
+  Button,
+  cn,
+  ConfirmDialog,
+  Contribute,
+  EmptyState,
+  ErrorState,
+  Loader,
+  type PluginContext,
+  useQuery,
+  useQueryClient,
+} from '@hermes/plugin-sdk'
+import { useCallback, useMemo, useState } from 'react'
 
 import {
-  $roadmaps,
-  $selectedRoadmapId,
-  $milestones,
-  type Roadmap,
-  type RoadmapMilestone,
-} from './stores/roadmaps'
-import {
-  fetchRoadmaps,
-  getRoadmap,
-  createRoadmap as apiCreateRoadmap,
-  updateRoadmap as apiUpdateRoadmap,
-  deleteRoadmap as apiDeleteRoadmap,
-  fetchMilestones,
   createMilestone as apiCreateMilestone,
-  updateMilestone as apiUpdateMilestone,
+  createRoadmap as apiCreateRoadmap,
   deleteMilestone as apiDeleteMilestone,
+  deleteRoadmap as apiDeleteRoadmap,
+  updateMilestone as apiUpdateMilestone,
+  updateRoadmap as apiUpdateRoadmap,
+  fetchMilestones,
+  fetchRoadmaps,
   reorderMilestones,
-} from './lib/roadmap-api'
+} from './roadmap-api'
+import type {
+  Roadmap,
+  RoadmapMilestone,
+} from './roadmaps'
+import { scopeReady, useWorkspaceScope } from './scope'
 import { WorkspaceScopeNotice } from './scope-notice'
-import { scopeReady, useWorkspaceScope } from './stores/scope'
 
 // ---------------------------------------------------------------------------
 // Titlebar
@@ -112,17 +112,19 @@ function RoadmapForm({ workspaceId, editing, onCancel, onDone, ctx }: RoadmapFor
   const [saving, setSaving] = useState(false)
 
   const handleSave = useCallback(async () => {
-    if (!name.trim()) return
+    if (!name.trim()) {return}
     setSaving(true)
+
     try {
       if (editing) {
         await apiUpdateRoadmap(ctx, editing.id, { name: name.trim(), description: description.trim() })
       } else {
         await apiCreateRoadmap(ctx, { workspace_id: workspaceId, name: name.trim(), description: description.trim() })
       }
+
       onDone()
     } catch {
-      // handled by query retry
+      // surfaced through query refetch
     } finally {
       setSaving(false)
     }
@@ -132,16 +134,16 @@ function RoadmapForm({ workspaceId, editing, onCancel, onDone, ctx }: RoadmapFor
     <div className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-secondary) p-4 space-y-3">
       <input
         className="w-full rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-3 py-2 text-sm text-(--ui-text-primary) outline-none focus:border-(--ui-stroke-focus)"
+        onChange={e => setName(e.target.value)}
         placeholder="Roadmap name"
         value={name}
-        onChange={e => setName(e.target.value)}
       />
       <textarea
         className="w-full rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-3 py-2 text-sm text-(--ui-text-primary) outline-none focus:border-(--ui-stroke-focus) resize-none"
+        onChange={e => setDescription(e.target.value)}
         placeholder="Description (optional)"
         rows={2}
         value={description}
-        onChange={e => setDescription(e.target.value)}
       />
       <div className="flex gap-2 justify-end">
         <Button disabled={saving} onClick={onCancel} size="sm" variant="secondary">
@@ -170,8 +172,9 @@ function MilestoneForm({ roadmapId, editing, onCancel, onDone, ctx }: MilestoneF
   const [saving, setSaving] = useState(false)
 
   const handleSave = useCallback(async () => {
-    if (!title.trim()) return
+    if (!title.trim()) {return}
     setSaving(true)
+
     try {
       if (editing) {
         await apiUpdateMilestone(ctx, roadmapId, editing.id, {
@@ -186,9 +189,10 @@ function MilestoneForm({ roadmapId, editing, onCancel, onDone, ctx }: MilestoneF
           status,
         })
       }
+
       onDone()
     } catch {
-      // handled by query retry
+      // surfaced through query refetch
     } finally {
       setSaving(false)
     }
@@ -198,23 +202,23 @@ function MilestoneForm({ roadmapId, editing, onCancel, onDone, ctx }: MilestoneF
     <div className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-secondary) p-4 space-y-3">
       <input
         className="w-full rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-3 py-2 text-sm text-(--ui-text-primary) outline-none focus:border-(--ui-stroke-focus)"
+        onChange={e => setTitle(e.target.value)}
         placeholder="Milestone title"
         value={title}
-        onChange={e => setTitle(e.target.value)}
       />
       <textarea
         className="w-full rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-3 py-2 text-sm text-(--ui-text-primary) outline-none focus:border-(--ui-stroke-focus) resize-none"
+        onChange={e => setDescription(e.target.value)}
         placeholder="Description (optional)"
         rows={2}
         value={description}
-        onChange={e => setDescription(e.target.value)}
       />
       <div className="flex gap-2 items-center">
         <span className="text-xs text-(--ui-text-tertiary)">Status:</span>
         <select
           className="rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-2 py-1 text-sm text-(--ui-text-primary)"
-          value={status}
           onChange={e => setStatus(e.target.value)}
+          value={status}
         >
           <option value="planned">Planned</option>
           <option value="in_progress">In Progress</option>
@@ -251,15 +255,11 @@ function MilestoneListView({ roadmapId, onRefresh, ctx }: MilestoneListProps) {
 
   const msQuery = useQuery({
     queryKey: ['workspace', 'roadmap', roadmapId, 'milestones'],
-    queryFn: async () => {
-      const r = await fetchMilestones(ctx, roadmapId)
-      $milestones.set(r.milestones)
-      return r.milestones
-    },
+    queryFn: () => fetchMilestones(ctx, roadmapId),
     staleTime: 0,
   })
 
-  const milestones = useStore($milestones)
+  const milestones = useMemo(() => msQuery.data?.milestones ?? [], [msQuery.data])
 
   const handleDelete = useCallback(async (id: string) => {
     setDeleteId(null)
@@ -268,16 +268,20 @@ function MilestoneListView({ roadmapId, onRefresh, ctx }: MilestoneListProps) {
   }, [ctx, roadmapId, onRefresh])
 
   const handleMoveUp = useCallback(async (idx: number) => {
-    if (idx <= 0) return
+    if (idx <= 0) {return}
+
     const ids = milestones.map(m => m.id)
+
     ;[ids[idx], ids[idx - 1]] = [ids[idx - 1], ids[idx]]
     await reorderMilestones(ctx, roadmapId, ids)
     onRefresh()
   }, [ctx, roadmapId, milestones, onRefresh])
 
   const handleMoveDown = useCallback(async (idx: number) => {
-    if (idx >= milestones.length - 1) return
+    if (idx >= milestones.length - 1) {return}
+
     const ids = milestones.map(m => m.id)
+
     ;[ids[idx], ids[idx + 1]] = [ids[idx + 1], ids[idx]]
     await reorderMilestones(ctx, roadmapId, ids)
     onRefresh()
@@ -305,9 +309,9 @@ function MilestoneListView({ roadmapId, onRefresh, ctx }: MilestoneListProps) {
         <MilestoneForm
           ctx={ctx}
           editing={null}
-          roadmapId={roadmapId}
           onCancel={() => setAdding(false)}
           onDone={() => { setAdding(false); onRefresh() }}
+          roadmapId={roadmapId}
         />
       )}
 
@@ -321,9 +325,9 @@ function MilestoneListView({ roadmapId, onRefresh, ctx }: MilestoneListProps) {
                 <MilestoneForm
                   ctx={ctx}
                   editing={m}
-                  roadmapId={roadmapId}
                   onCancel={() => setEditingId(null)}
                   onDone={() => { setEditingId(null); onRefresh() }}
+                  roadmapId={roadmapId}
                 />
               ) : (
                 <div className="flex items-center gap-2 rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) p-3">
@@ -371,8 +375,8 @@ function MilestoneListView({ roadmapId, onRefresh, ctx }: MilestoneListProps) {
 
       <ConfirmDialog
         description="This action cannot be undone."
-        onCancel={() => setDeleteId(null)}
-        onConfirm={() => { if (deleteId) void handleDelete(deleteId) }}
+        onClose={() => setDeleteId(null)}
+        onConfirm={() => { if (deleteId) {void handleDelete(deleteId)} }}
         open={deleteId !== null}
         title="Delete Milestone"
       />
@@ -405,9 +409,9 @@ function RoadmapCard({ roadmap, onRefresh, ctx }: RoadmapCardProps) {
       <RoadmapForm
         ctx={ctx}
         editing={roadmap}
-        workspaceId={roadmap.workspace_id}
         onCancel={() => setEditing(false)}
         onDone={() => { setEditing(false); onRefresh() }}
+        workspaceId={roadmap.workspace_id}
       />
     )
   }
@@ -443,13 +447,13 @@ function RoadmapCard({ roadmap, onRefresh, ctx }: RoadmapCardProps) {
 
       <MilestoneListView
         ctx={ctx}
-        roadmapId={roadmap.id}
         onRefresh={onRefresh}
+        roadmapId={roadmap.id}
       />
 
       <ConfirmDialog
         description="This will also delete all milestones in this roadmap."
-        onCancel={() => setDeleteConfirm(false)}
+        onClose={() => setDeleteConfirm(false)}
         onConfirm={() => void handleDelete()}
         open={deleteConfirm}
         title="Delete Roadmap"
@@ -464,37 +468,32 @@ function RoadmapCard({ roadmap, onRefresh, ctx }: RoadmapCardProps) {
 
 interface RoadmapsPageProps {
   ctx: PluginContext
-  workspaceId?: string
 }
 
-export function RoadmapsPage({ ctx, workspaceId = '' }: RoadmapsPageProps) {
+export function RoadmapsPage({ ctx }: RoadmapsPageProps) {
   const queryClient = useQueryClient()
   const scope = useWorkspaceScope(ctx)
   const [formOpen, setFormOpen] = useState(false)
-  const [wsId, setWsId] = useState(workspaceId || scope.workspaceId)
 
-  const effectiveWs = wsId || (scopeReady(scope) ? scope.workspaceId : '')
+  // The resolved project scope is authoritative. An unresolvable scope
+  // yields '' and gates every query off.
+  const ws = scopeReady(scope) ? scope.workspaceId : ''
 
   const roadmapsQuery = useQuery({
-    queryKey: ['workspace', 'roadmaps', 'list', effectiveWs],
-    queryFn: async () => {
-      const r = await fetchRoadmaps(ctx, effectiveWs)
-      $roadmaps.set(r.roadmaps)
-      return r.roadmaps
-    },
+    queryKey: ['workspace', 'roadmaps', 'list', ws],
+    queryFn: () => fetchRoadmaps(ctx, ws),
     staleTime: 0,
-    enabled: !!effectiveWs,
+    enabled: Boolean(ws),
   })
 
-  const roadmaps = useStore($roadmaps)
-  const selectedRoadmapId = useStore($selectedRoadmapId)
+  const roadmaps = roadmapsQuery.data?.roadmaps ?? []
 
   const handleRefresh = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['workspace', 'roadmaps'] })
     queryClient.invalidateQueries({ queryKey: ['workspace', 'roadmap'] })
   }, [queryClient])
 
-  if (!effectiveWs) {
+  if (!ws) {
     return (
       <div className="flex h-full flex-col">
         <Contribute area="titleBar.center" id="workspace-roadmaps:titlebar">
@@ -504,14 +503,8 @@ export function RoadmapsPage({ ctx, workspaceId = '' }: RoadmapsPageProps) {
         <div className="flex flex-1 items-center justify-center px-8">
           <div className="text-center max-w-sm">
             <p className="text-sm text-(--ui-text-secondary) mb-4">
-              Select a workspace to view roadmaps.
+              No workspace scope resolved — roadmap data is not shown (queries never fall back to global).
             </p>
-            <input
-              className="w-full rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-3 py-2 text-sm text-(--ui-text-primary) outline-none focus:border-(--ui-stroke-focus)"
-              placeholder="Workspace ID"
-              value={wsId}
-              onChange={e => setWsId(e.target.value)}
-            />
           </div>
         </div>
       </div>
@@ -555,9 +548,9 @@ export function RoadmapsPage({ ctx, workspaceId = '' }: RoadmapsPageProps) {
           {formOpen && (
             <RoadmapForm
               ctx={ctx}
-              workspaceId={effectiveWs}
               onCancel={() => setFormOpen(false)}
               onDone={() => { setFormOpen(false); handleRefresh() }}
+              workspaceId={ws}
             />
           )}
 
@@ -579,10 +572,10 @@ export function RoadmapsPage({ ctx, workspaceId = '' }: RoadmapsPageProps) {
           ) : (
             roadmaps.map(r => (
               <RoadmapCard
-                key={r.id}
                 ctx={ctx}
-                roadmap={r}
+                key={r.id}
                 onRefresh={handleRefresh}
+                roadmap={r}
               />
             ))
           )}

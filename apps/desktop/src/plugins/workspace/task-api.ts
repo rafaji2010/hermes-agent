@@ -1,21 +1,28 @@
 /**
  * Task API — REST wrappers for task + comment + dependency endpoints.
+ *
+ * U1C: `ctx.rest()` serializes object bodies itself — every mutation passes
+ * a plain object, never a pre-serialized JSON string.  Get-by-id helpers
+ * carry the effective workspace scope for the backend membership check.
  */
 
-import type { PluginContext } from '@/contrib/plugin'
+import type { PluginContext } from '@hermes/plugin-sdk'
+
 import type {
+  TaskCommentListResponse,
   TaskCreatePayload,
   TaskDependencyListResponse,
   TaskListResponse,
   TaskUpdatePayload,
-  TaskCommentListResponse,
-} from '../stores/tasks'
+} from './tasks'
 
-function qs(params: Record<string, string | undefined>): string {
+function qs(params: Record<string, string | number | boolean | undefined>): string {
   const p = new URLSearchParams()
+
   for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined && v !== '') p.set(k, v)
+    if (v !== undefined && v !== '') {p.set(k, String(v))}
   }
+
   return p.toString()
 }
 
@@ -36,7 +43,7 @@ export async function fetchTasks(
     limit?: number
   },
 ): Promise<TaskListResponse> {
-  return ctx.rest<TaskListResponse>(`/v1/tasks?${qs(params as Record<string,string|undefined>)}`)
+  return ctx.rest<TaskListResponse>(`/v1/tasks?${qs(params)}`)
 }
 
 export async function searchTasks(
@@ -55,18 +62,24 @@ export async function searchTasks(
     overdue?: boolean
   },
 ): Promise<TaskListResponse> {
-  return ctx.rest<TaskListResponse>(`/v1/tasks/search?${qs(params as Record<string,string|undefined>)}`)
+  return ctx.rest<TaskListResponse>(`/v1/tasks/search?${qs(params)}`)
 }
 
-export async function getTask(ctx: PluginContext, id: string): Promise<TaskListResponse> {
-  return ctx.rest<TaskListResponse>(`/v1/tasks/${encodeURIComponent(id)}`)
+export async function getTask(
+  ctx: PluginContext,
+  id: string,
+  workspaceId = '',
+): Promise<TaskListResponse> {
+  const scope = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : ''
+
+  return ctx.rest<TaskListResponse>(`/v1/tasks/${encodeURIComponent(id)}${scope}`)
 }
 
 export async function createTask(
   ctx: PluginContext,
   payload: TaskCreatePayload,
 ): Promise<TaskListResponse> {
-  return ctx.rest<TaskListResponse>('/v1/tasks', { method: 'POST', body: JSON.stringify(payload) })
+  return ctx.rest<TaskListResponse>('/v1/tasks', { method: 'POST', body: payload })
 }
 
 export async function updateTask(
@@ -76,7 +89,7 @@ export async function updateTask(
 ): Promise<TaskListResponse> {
   return ctx.rest<TaskListResponse>(`/v1/tasks/${encodeURIComponent(id)}`, {
     method: 'PUT',
-    body: JSON.stringify(payload),
+    body: payload,
   })
 }
 
@@ -87,8 +100,13 @@ export async function deleteTask(ctx: PluginContext, id: string): Promise<{ ok: 
 export async function fetchComments(
   ctx: PluginContext,
   taskId: string,
+  workspaceId = '',
 ): Promise<TaskCommentListResponse> {
-  return ctx.rest<TaskCommentListResponse>(`/v1/tasks/${encodeURIComponent(taskId)}/comments`)
+  const scope = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : ''
+
+  return ctx.rest<TaskCommentListResponse>(
+    `/v1/tasks/${encodeURIComponent(taskId)}/comments${scope}`,
+  )
 }
 
 export async function addComment(
@@ -98,26 +116,29 @@ export async function addComment(
 ): Promise<TaskCommentListResponse> {
   return ctx.rest<TaskCommentListResponse>(`/v1/tasks/${encodeURIComponent(taskId)}/comments`, {
     method: 'POST',
-    body: JSON.stringify({ body }),
+    body: { body },
   })
 }
 
 export async function getDependencies(
   ctx: PluginContext,
   taskId: string,
+  workspaceId = '',
 ): Promise<TaskDependencyListResponse> {
+  const scope = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : ''
+
   return ctx.rest<TaskDependencyListResponse>(
-    `/v1/tasks/${encodeURIComponent(taskId)}/dependencies`,
+    `/v1/tasks/${encodeURIComponent(taskId)}/dependencies${scope}`,
   )
 }
 
 export async function setDependencies(
   ctx: PluginContext,
   taskId: string,
-  depends_on_ids: string[],
+  dependsOnIds: string[],
 ): Promise<TaskDependencyListResponse> {
   return ctx.rest<TaskDependencyListResponse>(
     `/v1/tasks/${encodeURIComponent(taskId)}/dependencies`,
-    { method: 'PUT', body: JSON.stringify({ depends_on_ids }) },
+    { method: 'PUT', body: { depends_on_ids: dependsOnIds } },
   )
 }

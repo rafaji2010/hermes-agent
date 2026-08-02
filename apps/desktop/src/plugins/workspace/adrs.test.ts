@@ -62,6 +62,7 @@ describe('adrReconcileSummaryMessage', () => {
       invalid_paths: [],
       dry_run: false
     })
+
     expect(msg).toContain('2 indexed')
     expect(msg).toContain('1 synced')
     expect(msg).toContain('1 legacy')

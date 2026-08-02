@@ -1,50 +1,51 @@
 /**
  * Tasks Page — Kanban board + table view, task CRUD, search, detail.
+ *
+ * U1C: the resolved project scope is the single source of truth for the
+ * workspace; task/comment/dependency data comes from React Query, never
+ * from cross-workspace module-level atoms.
  */
 
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useStore } from '@nanostores/react'
+import {
+  Badge,
+  Button,
+  cn,
+  ConfirmDialog,
+  Contribute,
+  EmptyState,
+  ErrorState,
+  Loader,
+  type PluginContext,
+  useQuery,
+  useQueryClient,
+  useValue,
+} from '@hermes/plugin-sdk'
 import { useCallback, useState } from 'react'
 
-import { Contribute } from '@/contrib/react/contribute'
-import type { PluginContext } from '@/contrib/plugin'
-import { Button } from '@/components/ui/button'
-import { ErrorState } from '@/components/ui/error-state'
-import { Loader } from '@/components/ui/loader'
-import { ConfirmDialog } from '@/components/ui/confirm-dialog'
-import { EmptyState } from '@/components/ui/empty-state'
-import { Badge } from '@/components/ui/badge'
-import { cn } from '@/lib/utils'
-
+import { scopeReady, useWorkspaceScope } from './scope'
+import { WorkspaceScopeNotice } from './scope-notice'
 import {
-  $tasks,
-  $selectedTaskId,
-  $taskComments,
-  $taskDeps,
+  addComment as apiAddComment,
+  createTask as apiCreateTask,
+  deleteTask as apiDeleteTask,
+  getTask as apiGetTask,
+  updateTask as apiUpdateTask,
+  fetchComments,
+  fetchTasks,
+  getDependencies,
+  searchTasks,
+} from './task-api'
+import {
   $taskViewMode,
   type Task,
-  type TaskComment,
-} from './stores/tasks'
-import {
-  fetchTasks,
-  searchTasks,
-  getTask as apiGetTask,
-  createTask as apiCreateTask,
-  updateTask as apiUpdateTask,
-  deleteTask as apiDeleteTask,
-  fetchComments,
-  addComment as apiAddComment,
-  getDependencies,
-} from './lib/task-api'
-import { WorkspaceScopeNotice } from './scope-notice'
-import { scopeReady, useWorkspaceScope } from './stores/scope'
+} from './tasks'
 
 // ---------------------------------------------------------------------------
 // Status & priority colors
 // ---------------------------------------------------------------------------
 
 const STATUS_COLORS: Record<string, string> = {
-  todo: 'bg-gray-500/10 text-gray-400 border-gray-500/20',
+  todo: 'bg-gray-500/10 text-gray-500 border-gray-500/20',
   in_progress: 'bg-blue-500/10 text-blue-500 border-blue-500/20',
   blocked: 'bg-red-500/10 text-red-500 border-red-500/20',
   review: 'bg-purple-500/10 text-purple-500 border-purple-500/20',
@@ -118,15 +119,18 @@ function TaskForm({ workspaceId, editing, onCancel, onDone, ctx }: TaskFormProps
   const [saving, setSaving] = useState(false)
 
   const handleSave = useCallback(async () => {
-    if (!title.trim()) return
+    if (!title.trim()) {return}
     setSaving(true)
+
     try {
       const labelList = labels.split(',').map(l => l.trim()).filter(Boolean)
+
       if (editing) {
         await apiUpdateTask(ctx, editing.id, { title: title.trim(), description: desc.trim(), status, priority, labels: labelList })
       } else {
         await apiCreateTask(ctx, { workspace_id: workspaceId, title: title.trim(), description: desc.trim(), status, priority, labels: labelList })
       }
+
       onDone()
     } finally {
       setSaving(false)
@@ -137,27 +141,27 @@ function TaskForm({ workspaceId, editing, onCancel, onDone, ctx }: TaskFormProps
     <div className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-secondary) p-4 space-y-3">
       <input
         className="w-full rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-3 py-2 text-sm text-(--ui-text-primary) outline-none focus:border-(--ui-stroke-focus)"
+        onChange={e => setTitle(e.target.value)}
         placeholder="Task title"
         value={title}
-        onChange={e => setTitle(e.target.value)}
       />
       <textarea
         className="w-full rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-3 py-2 text-sm text-(--ui-text-primary) outline-none focus:border-(--ui-stroke-focus) resize-none"
+        onChange={e => setDesc(e.target.value)}
         placeholder="Description"
         rows={2}
         value={desc}
-        onChange={e => setDesc(e.target.value)}
       />
       <div className="flex gap-4">
         <div className="flex items-center gap-2">
           <span className="text-xs text-(--ui-text-tertiary)">Status:</span>
           <select
             className="rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-2 py-1 text-sm text-(--ui-text-primary)"
-            value={status}
             onChange={e => setStatus(e.target.value)}
+            value={status}
           >
-            {['todo','in_progress','blocked','review','done','cancelled'].map(s => (
-              <option key={s} value={s}>{s.replace('_',' ')}</option>
+            {['todo', 'in_progress', 'blocked', 'review', 'done', 'cancelled'].map(s => (
+              <option key={s} value={s}>{s.replace('_', ' ')}</option>
             ))}
           </select>
         </div>
@@ -165,10 +169,10 @@ function TaskForm({ workspaceId, editing, onCancel, onDone, ctx }: TaskFormProps
           <span className="text-xs text-(--ui-text-tertiary)">Priority:</span>
           <select
             className="rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-2 py-1 text-sm text-(--ui-text-primary)"
-            value={priority}
             onChange={e => setPriority(e.target.value)}
+            value={priority}
           >
-            {['critical','high','medium','low'].map(p => (
+            {['critical', 'high', 'medium', 'low'].map(p => (
               <option key={p} value={p}>{p}</option>
             ))}
           </select>
@@ -176,9 +180,9 @@ function TaskForm({ workspaceId, editing, onCancel, onDone, ctx }: TaskFormProps
       </div>
       <input
         className="w-full rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-3 py-2 text-sm text-(--ui-text-primary) outline-none focus:border-(--ui-stroke-focus)"
+        onChange={e => setLabels(e.target.value)}
         placeholder="Labels (comma-separated)"
         value={labels}
-        onChange={e => setLabels(e.target.value)}
       />
       <div className="flex gap-2 justify-end">
         <Button disabled={saving} onClick={onCancel} size="sm" variant="secondary">Cancel</Button>
@@ -215,7 +219,7 @@ function TaskCard({ task, onSelect, onStatusChange }: TaskCardProps) {
       {task.labels.length > 0 && (
         <div className="flex gap-1 flex-wrap">
           {task.labels.slice(0, 3).map(l => (
-            <span key={l} className="text-[10px] px-1.5 py-0.5 rounded bg-(--ui-bg-quaternary) text-(--ui-text-tertiary)">{l}</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-(--ui-bg-quaternary) text-(--ui-text-tertiary)" key={l}>{l}</span>
           ))}
           {task.labels.length > 3 && (
             <span className="text-[10px] text-(--ui-text-tertiary)">+{task.labels.length - 3}</span>
@@ -254,9 +258,9 @@ function KanbanColumn({ label, tasks, status, onSelect, onStatusChange }: Kanban
         {tasks.map(t => (
           <TaskCard
             key={t.id}
-            task={t}
             onSelect={onSelect}
             onStatusChange={onStatusChange}
+            task={t}
           />
         ))}
       </div>
@@ -271,46 +275,41 @@ function KanbanColumn({ label, tasks, status, onSelect, onStatusChange }: Kanban
 interface TaskDetailProps {
   ctx: PluginContext
   taskId: string
+  workspaceId: string
   onClose: () => void
   onRefresh: () => void
 }
 
-function TaskDetail({ ctx, taskId, onClose, onRefresh }: TaskDetailProps) {
+function TaskDetail({ ctx, taskId, workspaceId, onClose, onRefresh }: TaskDetailProps) {
   const [commentText, setCommentText] = useState('')
   const [sendingComment, setSendingComment] = useState(false)
 
   const taskQuery = useQuery({
-    queryKey: ['workspace', 'task', taskId],
+    queryKey: ['workspace', 'task', workspaceId, taskId],
     queryFn: async () => {
-      const r = await apiGetTask(ctx, taskId)
+      const r = await apiGetTask(ctx, taskId, workspaceId)
+
       return r.tasks[0]
     },
   })
 
   const commentsQuery = useQuery({
-    queryKey: ['workspace', 'task', taskId, 'comments'],
-    queryFn: async () => {
-      const r = await fetchComments(ctx, taskId)
-      $taskComments.set(r.comments)
-      return r.comments
-    },
+    queryKey: ['workspace', 'task', workspaceId, taskId, 'comments'],
+    queryFn: () => fetchComments(ctx, taskId, workspaceId),
   })
 
   const depsQuery = useQuery({
-    queryKey: ['workspace', 'task', taskId, 'deps'],
-    queryFn: async () => {
-      const r = await getDependencies(ctx, taskId)
-      $taskDeps.set(r)
-      return r
-    },
+    queryKey: ['workspace', 'task', workspaceId, taskId, 'deps'],
+    queryFn: () => getDependencies(ctx, taskId, workspaceId),
   })
 
   const task = taskQuery.data
-  const comments = useStore($taskComments)
+  const comments = commentsQuery.data?.comments ?? []
 
   const handleAddComment = useCallback(async () => {
-    if (!commentText.trim()) return
+    if (!commentText.trim()) {return}
     setSendingComment(true)
+
     try {
       await apiAddComment(ctx, taskId, commentText.trim())
       setCommentText('')
@@ -320,7 +319,7 @@ function TaskDetail({ ctx, taskId, onClose, onRefresh }: TaskDetailProps) {
     }
   }, [commentText, ctx, taskId, onRefresh])
 
-  if (!task) return <Loader type="lemniscate-bloom" />
+  if (!task) {return <Loader type="lemniscate-bloom" />}
 
   return (
     <div className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-secondary) p-4 space-y-4 max-h-full overflow-auto">
@@ -342,7 +341,7 @@ function TaskDetail({ ctx, taskId, onClose, onRefresh }: TaskDetailProps) {
       {task.labels.length > 0 && (
         <div className="flex gap-1 flex-wrap">
           {task.labels.map(l => (
-            <Badge key={l} variant="secondary">{l}</Badge>
+            <Badge key={l} variant="muted">{l}</Badge>
           ))}
         </div>
       )}
@@ -361,7 +360,7 @@ function TaskDetail({ ctx, taskId, onClose, onRefresh }: TaskDetailProps) {
         <h4 className="text-xs font-medium text-(--ui-text-tertiary) mb-2">Comments</h4>
         <div className="space-y-2 mb-3">
           {comments.map(c => (
-            <div key={c.id} className="text-xs bg-(--ui-bg-primary) rounded p-2">
+            <div className="text-xs bg-(--ui-bg-primary) rounded p-2" key={c.id}>
               <div className="text-(--ui-text-secondary)">{c.body}</div>
               <div className="text-(--ui-text-tertiary) mt-0.5">{c.created_at}</div>
             </div>
@@ -370,10 +369,10 @@ function TaskDetail({ ctx, taskId, onClose, onRefresh }: TaskDetailProps) {
         <div className="flex gap-2">
           <input
             className="flex-1 rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-2 py-1 text-xs text-(--ui-text-primary) outline-none"
+            onChange={e => setCommentText(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') {void handleAddComment()} }}
             placeholder="Add a comment..."
             value={commentText}
-            onChange={e => setCommentText(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') void handleAddComment() }}
           />
           <Button disabled={sendingComment || !commentText.trim()} onClick={() => void handleAddComment()} size="xs">Send</Button>
         </div>
@@ -398,15 +397,11 @@ function PageTitlebar() {
 
 interface TasksPageProps {
   ctx: PluginContext
-  workspaceId?: string
 }
 
-export function TasksPage({ ctx, workspaceId = '' }: TasksPageProps) {
+export function TasksPage({ ctx }: TasksPageProps) {
   const queryClient = useQueryClient()
   const scope = useWorkspaceScope(ctx)
-  // The resolved project scope seeds the workspace selector; a manual
-  // entry remains as an explicit override for tooling/debug use.
-  const [wsId, setWsId] = useState(workspaceId || scope.workspaceId)
   const [formOpen, setFormOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [deleteId, setDeleteId] = useState<string | null>(null)
@@ -414,28 +409,32 @@ export function TasksPage({ ctx, workspaceId = '' }: TasksPageProps) {
   const [searchQ, setSearchQ] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
 
-  const viewMode = useStore($taskViewMode)
+  const viewMode = useValue($taskViewMode)
 
-  const effectiveWs = wsId || (scopeReady(scope) ? scope.workspaceId : '')
+  // The resolved project scope is authoritative. An unresolvable scope
+  // yields '' and gates every query off.
+  const ws = scopeReady(scope) ? scope.workspaceId : ''
 
   const tasksQuery = useQuery({
-    queryKey: ['workspace', 'tasks', effectiveWs, searchQ, statusFilter],
+    queryKey: ['workspace', 'tasks', ws, searchQ, statusFilter],
     queryFn: async () => {
       const params: Record<string, string | undefined> = {}
-      if (effectiveWs) params.workspace_id = effectiveWs
-      if (statusFilter) params.status = statusFilter
-      if (searchQ) params.q = searchQ
-      const r = searchQ
-        ? await searchTasks(ctx, params)
-        : await fetchTasks(ctx, params as any)
-      $tasks.set(r.tasks)
-      return r.tasks
+
+      if (ws) {params.workspace_id = ws}
+
+      if (statusFilter) {params.status = statusFilter}
+
+      if (searchQ) {params.q = searchQ}
+
+      return searchQ
+        ? searchTasks(ctx, params)
+        : fetchTasks(ctx, params)
     },
-    enabled: Boolean(effectiveWs),
+    enabled: Boolean(ws),
     staleTime: 0,
   })
 
-  const tasks = useStore($tasks)
+  const tasks = tasksQuery.data?.tasks ?? []
 
   const handleRefresh = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['workspace', 'tasks'] })
@@ -458,7 +457,7 @@ export function TasksPage({ ctx, workspaceId = '' }: TasksPageProps) {
     tasks: tasks.filter(t => t.status === col.key),
   }))
 
-  if (!effectiveWs) {
+  if (!ws) {
     return (
       <div className="flex h-full flex-col">
         <Contribute area="titleBar.center" id="workspace-tasks:titlebar">
@@ -467,13 +466,7 @@ export function TasksPage({ ctx, workspaceId = '' }: TasksPageProps) {
         <WorkspaceScopeNotice ctx={ctx} scope={scope} />
         <div className="flex flex-1 items-center justify-center px-8">
           <div className="text-center max-w-sm">
-            <p className="text-sm text-(--ui-text-secondary) mb-4">Select a workspace to manage tasks.</p>
-            <input
-              className="w-full rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-3 py-2 text-sm text-(--ui-text-primary) outline-none focus:border-(--ui-stroke-focus)"
-              placeholder="Workspace ID"
-              value={wsId}
-              onChange={e => setWsId(e.target.value)}
-            />
+            <p className="text-sm text-(--ui-text-secondary) mb-4">No workspace scope resolved — task data is not shown (queries never fall back to global).</p>
           </div>
         </div>
       </div>
@@ -508,8 +501,8 @@ export function TasksPage({ ctx, workspaceId = '' }: TasksPageProps) {
             </div>
             <select
               className="rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-2 py-1 text-xs text-(--ui-text-primary)"
-              value={statusFilter}
               onChange={e => setStatusFilter(e.target.value)}
+              value={statusFilter}
             >
               <option value="">All Status</option>
               {KANBAN_COLUMNS.map(c => (
@@ -518,9 +511,9 @@ export function TasksPage({ ctx, workspaceId = '' }: TasksPageProps) {
             </select>
             <input
               className="rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-2 py-1 text-xs text-(--ui-text-primary) w-40 outline-none"
+              onChange={e => setSearchQ(e.target.value)}
               placeholder="Search..."
               value={searchQ}
-              onChange={e => setSearchQ(e.target.value)}
             />
             <Button disabled={formOpen} onClick={() => setFormOpen(true)} size="xs" variant="secondary">+ Task</Button>
             <Button disabled={tasksQuery.isFetching} onClick={handleRefresh} size="xs" variant="secondary">Refresh</Button>
@@ -529,12 +522,12 @@ export function TasksPage({ ctx, workspaceId = '' }: TasksPageProps) {
 
         <div className="p-4 space-y-4">
           {formOpen && (
-            <TaskForm ctx={ctx} workspaceId={effectiveWs} onCancel={() => setFormOpen(false)} onDone={() => { setFormOpen(false); handleRefresh() }} />
+            <TaskForm ctx={ctx} onCancel={() => setFormOpen(false)} onDone={() => { setFormOpen(false); handleRefresh() }} workspaceId={ws} />
           )}
 
           {detailId && (
             <div className="mb-4">
-              <TaskDetail ctx={ctx} taskId={detailId} onClose={() => { setDetailId(null); handleRefresh() }} onRefresh={() => { queryClient.invalidateQueries({ queryKey: ['workspace', 'task', detailId] }); handleRefresh() }} />
+              <TaskDetail ctx={ctx} onClose={() => { setDetailId(null); handleRefresh() }} onRefresh={() => { queryClient.invalidateQueries({ queryKey: ['workspace', 'task', ws, detailId] }); handleRefresh() }} taskId={detailId} workspaceId={ws} />
             </div>
           )}
 
@@ -552,10 +545,10 @@ export function TasksPage({ ctx, workspaceId = '' }: TasksPageProps) {
                 <KanbanColumn
                   key={group.key}
                   label={group.label}
-                  status={group.key}
-                  tasks={group.tasks}
                   onSelect={setDetailId}
                   onStatusChange={handleStatusChange}
+                  status={group.key}
+                  tasks={group.tasks}
                 />
               ))}
             </div>
@@ -573,7 +566,7 @@ export function TasksPage({ ctx, workspaceId = '' }: TasksPageProps) {
                 </thead>
                 <tbody>
                   {tasks.map(t => (
-                    <tr key={t.id} className="border-b border-(--ui-stroke-tertiary) hover:bg-(--ui-bg-secondary)">
+                    <tr className="border-b border-(--ui-stroke-tertiary) hover:bg-(--ui-bg-secondary)" key={t.id}>
                       <td className="py-2 px-3">
                         <button className="text-(--ui-text-primary) hover:underline text-left" onClick={() => setDetailId(t.id)}>
                           {t.title}
@@ -600,10 +593,10 @@ export function TasksPage({ ctx, workspaceId = '' }: TasksPageProps) {
           <div className="w-full max-w-lg">
             <TaskForm
               ctx={ctx}
-              workspaceId={effectiveWs}
               editing={tasks.find(t => t.id === editingId) || null}
               onCancel={() => setEditingId(null)}
               onDone={() => { setEditingId(null); handleRefresh() }}
+              workspaceId={ws}
             />
           </div>
         </div>
@@ -611,8 +604,8 @@ export function TasksPage({ ctx, workspaceId = '' }: TasksPageProps) {
 
       <ConfirmDialog
         description="Permanently delete this task and its comments."
-        onCancel={() => setDeleteId(null)}
-        onConfirm={() => { if (deleteId) void handleDelete(deleteId) }}
+        onClose={() => setDeleteId(null)}
+        onConfirm={() => { if (deleteId) {void handleDelete(deleteId)} }}
         open={deleteId !== null}
         title="Delete Task"
       />

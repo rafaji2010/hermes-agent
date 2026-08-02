@@ -1,30 +1,33 @@
 /**
  * Assistant Page — chat with suggested prompts, entity cards, analytics.
+ *
+ * U1C: conversation state re-homes with the effective workspace scope —
+ * when the resolved workspace changes, messages/conversation/entities are
+ * reset so one workspace's context never leaks into another.
  */
 
-import { useQuery } from '@tanstack/react-query'
-import { useStore } from '@nanostores/react'
+import {
+  Button,
+  cn,
+  Contribute,
+  Loader,
+  type PluginContext,
+  useQuery,
+  useValue,
+} from '@hermes/plugin-sdk'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { Contribute } from '@/contrib/react/contribute'
-import type { PluginContext } from '@/contrib/plugin'
-import { Button } from '@/components/ui/button'
-import { Loader } from '@/components/ui/loader'
-import { EmptyState } from '@/components/ui/empty-state'
-import { cn } from '@/lib/utils'
-
 import {
-  $messages,
   $conversationId,
-  $suggestions,
   $isThinking,
+  $messages,
   $referencedEntities,
   type ChatMessage,
   type ReferencedEntity,
-} from './stores/assistant'
-import { chat, getSuggestions } from './lib/assistant-api'
+} from './assistant'
+import { chat, getSuggestions } from './assistant-api'
+import { scopeReady, useWorkspaceScope } from './scope'
 import { WorkspaceScopeNotice } from './scope-notice'
-import { scopeReady, useWorkspaceScope } from './stores/scope'
 
 const SUGGESTED_PROMPTS = [
   'What should I work on next?',
@@ -84,52 +87,63 @@ function EntityCard({ entity }: { entity: ReferencedEntity }) {
 
 interface AssistantPageProps {
   ctx: PluginContext
-  workspaceId?: string
 }
 
-export function AssistantPage({ ctx, workspaceId = '' }: AssistantPageProps) {
+export function AssistantPage({ ctx }: AssistantPageProps) {
   const [input, setInput] = useState('')
   const scope = useWorkspaceScope(ctx)
-  const [wsId, setWsId] = useState(workspaceId || scope.workspaceId)
   const messagesEnd = useRef<HTMLDivElement>(null)
 
-  const effectiveWs = wsId || (scopeReady(scope) ? scope.workspaceId : '')
+  // The resolved project scope is authoritative. An unresolvable scope
+  // yields '' and gates the assistant off.
+  const effectiveWs = scopeReady(scope) ? scope.workspaceId : ''
 
-  const messages = useStore($messages)
-  const convId = useStore($conversationId)
-  const isThinking = useStore($isThinking)
-  const refEntities = useStore($referencedEntities)
+  const messages = useValue($messages)
+  const convId = useValue($conversationId)
+  const isThinking = useValue($isThinking)
+  const refEntities = useValue($referencedEntities)
 
   useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
 
+  // U1C re-home: conversation context is scoped to one effective workspace.
+  // Whenever the resolved workspace changes (project/session/profile), reset
+  // the chat so one workspace's context never leaks into another. The first
+  // run is a no-op — state starts empty.
+  useEffect(() => {
+    $messages.set([])
+    $conversationId.set('')
+    $referencedEntities.set([])
+  }, [effectiveWs])
+
   const suggestQ = useQuery({
     queryKey: ['workspace', 'suggestions', effectiveWs],
-    queryFn: async () => {
-      const r = await getSuggestions(ctx, effectiveWs)
-      $suggestions.set(r.suggestions)
-      return r.suggestions
-    },
+    queryFn: () => getSuggestions(ctx, effectiveWs),
     enabled: Boolean(effectiveWs),
     staleTime: 30000,
   })
 
   const handleSend = useCallback(async (text?: string) => {
     const q = (text || input).trim()
-    if (!q || isThinking) return
+
+    if (!q || isThinking) {return}
     setInput('')
     const userMsg: ChatMessage = { role: 'user', content: q, referenced_entities: [] }
     $messages.set([...messages, userMsg])
     $isThinking.set(true)
+
     try {
       const r = await chat(ctx, q, convId, effectiveWs)
       const newConvId = r.conversation_id || convId
-      if (newConvId && !convId) $conversationId.set(newConvId)
+
+      if (newConvId && !convId) {$conversationId.set(newConvId)}
       $referencedEntities.set(r.referenced_entities)
+
       const asstMsg: ChatMessage = {
         role: 'assistant',
         content: r.answer,
         referenced_entities: r.referenced_entities,
       }
+
       $messages.set([...$messages.get(), asstMsg])
     } catch {
       const errMsg: ChatMessage = {
@@ -137,6 +151,7 @@ export function AssistantPage({ ctx, workspaceId = '' }: AssistantPageProps) {
         content: 'Sorry, something went wrong. Please try again.',
         referenced_entities: [],
       }
+
       $messages.set([...$messages.get(), errMsg])
     } finally {
       $isThinking.set(false)
@@ -156,13 +171,7 @@ export function AssistantPage({ ctx, workspaceId = '' }: AssistantPageProps) {
         <WorkspaceScopeNotice ctx={ctx} scope={scope} />
         <div className="flex flex-1 items-center justify-center px-8">
           <div className="text-center max-w-sm">
-            <p className="text-sm text-(--ui-text-secondary) mb-4">Select a workspace to use the assistant.</p>
-            <input
-              className="w-full rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-3 py-2 text-sm text-(--ui-text-primary) outline-none focus:border-(--ui-stroke-focus)"
-              placeholder="Workspace ID"
-              value={wsId}
-              onChange={e => setWsId(e.target.value)}
-            />
+            <p className="text-sm text-(--ui-text-secondary) mb-4">No workspace scope resolved — the assistant is disabled (it never falls back to global).</p>
           </div>
         </div>
       </div>
@@ -187,8 +196,8 @@ export function AssistantPage({ ctx, workspaceId = '' }: AssistantPageProps) {
                 <div className="flex flex-wrap gap-2 justify-center">
                   {SUGGESTED_PROMPTS.map((p, i) => (
                     <button
-                      key={i}
                       className="px-3 py-1.5 rounded border border-(--ui-stroke-tertiary) text-xs text-(--ui-text-secondary) hover:bg-(--ui-bg-secondary) hover:text-(--ui-text-primary)"
+                      key={i}
                       onClick={() => void handleSend(p)}
                     >
                       {p}
@@ -199,7 +208,7 @@ export function AssistantPage({ ctx, workspaceId = '' }: AssistantPageProps) {
             )}
 
             {messages.map((m, i) => (
-              <div key={i} className={cn('flex gap-3', m.role === 'user' ? 'justify-end' : '')}>
+              <div className={cn('flex gap-3', m.role === 'user' ? 'justify-end' : '')} key={i}>
                 <div className={cn(
                   'max-w-[80%] rounded-lg p-4 text-sm',
                   m.role === 'user'
@@ -210,7 +219,7 @@ export function AssistantPage({ ctx, workspaceId = '' }: AssistantPageProps) {
                   {m.referenced_entities.length > 0 && (
                     <div className="mt-2 pt-2 border-t border-(--ui-stroke-tertiary) space-y-1">
                       {m.referenced_entities.map(e => (
-                        <EntityCard key={`${e.type}:${e.id}`} entity={e} />
+                        <EntityCard entity={e} key={`${e.type}:${e.id}`} />
                       ))}
                     </div>
                   )}
@@ -232,11 +241,11 @@ export function AssistantPage({ ctx, workspaceId = '' }: AssistantPageProps) {
             <div className="flex gap-2">
               <input
                 className="flex-1 rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-3 py-2 text-sm text-(--ui-text-primary) outline-none focus:border-(--ui-stroke-focus)"
+                disabled={isThinking}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') {void handleSend()} }}
                 placeholder="Ask about your workspace..."
                 value={input}
-                onChange={e => setInput(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') void handleSend() }}
-                disabled={isThinking}
               />
               <Button disabled={isThinking || !input.trim()} onClick={() => void handleSend()} size="sm">Send</Button>
               <Button onClick={handleClear} size="sm" variant="ghost">Clear</Button>
@@ -253,7 +262,7 @@ export function AssistantPage({ ctx, workspaceId = '' }: AssistantPageProps) {
             {refEntities.length === 0 ? (
               <p className="text-xs text-(--ui-text-tertiary)">No entities yet.</p>
             ) : (
-              <div className="space-y-1">{refEntities.map(e => <EntityCard key={`${e.type}:${e.id}`} entity={e} />)}</div>
+              <div className="space-y-1">{refEntities.map(e => <EntityCard entity={e} key={`${e.type}:${e.id}`} />)}</div>
             )}
           </div>
 
@@ -261,12 +270,12 @@ export function AssistantPage({ ctx, workspaceId = '' }: AssistantPageProps) {
             <h4 className="text-xs font-semibold uppercase tracking-wider text-(--ui-text-tertiary) mb-2">
               Suggestions
             </h4>
-            {suggestQ.data && suggestQ.data.length > 0 && (
+            {suggestQ.data && suggestQ.data.suggestions.length > 0 && (
               <div className="space-y-2">
-                {suggestQ.data.map((s, i) => (
+                {suggestQ.data.suggestions.map((s, i) => (
                   <button
-                    key={i}
                     className="w-full text-left rounded border border-(--ui-stroke-tertiary) px-3 py-2 text-xs hover:bg-(--ui-bg-secondary)"
+                    key={i}
                     onClick={() => void handleSend(s.title.replace(/^Ask:\s*/, ''))}
                   >
                     <div className="font-medium text-(--ui-text-primary)">{s.title}</div>

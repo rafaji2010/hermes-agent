@@ -5,23 +5,22 @@
  * ``src/plugins/*\/plugin.{ts,tsx}``.  Default-exports a `HermesPlugin`
  * that registers:
  *
- * - A contributed route at ``/workspace``
- * - A sidebar nav entry labelled "Workspace"
+ * - One contributed route at ``/workspace`` (the current upstream route
+ *   contract defines one-segment contributed paths — all Workspace
+ *   surfaces live behind this root via internal navigation).
+ * - A sidebar nav entry labelled "Workspace".
  *
- * The route renders ``<WorkspacePage />`` which calls ``ctx.rest("/health")``
- * to confirm the Python backend plugin is reachable.
+ * The route renders ``<WorkspaceShell />`` whose overview tab calls
+ * ``ctx.rest("/v1/health")`` to confirm the Python backend plugin is
+ * reachable.
+ *
+ * U1C: imports are SDK-only (+ react) — no application internals, so the
+ * plugin is a valid consumer of the current authoring boundary.
  */
 
-import type { HermesPlugin } from '@/contrib/plugin'
+import type { HermesPlugin } from '@hermes/plugin-sdk'
 
-import { WorkspacePage } from './workspace-page'
-import { ADRPage } from './adr-page'
-import { JournalPage } from './journal-page'
-import { RoadmapsPage } from './roadmaps-page'
-import { TasksPage } from './tasks-page'
-import { SearchPage } from './search-page'
-import { AnalyticsPage } from './analytics-page'
-import { AssistantPage } from './assistant-page'
+import { WorkspaceShell } from './workspace-shell'
 
 const plugin: HermesPlugin = {
   id: 'workspace',
@@ -29,70 +28,12 @@ const plugin: HermesPlugin = {
   defaultEnabled: true,
 
   register(ctx) {
-    console.log('[Workspace Plugin] Loaded successfully')
-
     ctx.register({
       id: 'dashboard',
       area: 'routes',
       title: 'Workspace',
       data: { path: '/workspace' },
-      render: () => <WorkspacePage ctx={ctx} />,
-    })
-
-    ctx.register({
-      id: 'adrs',
-      area: 'routes',
-      title: 'Workspace ADRs',
-      data: { path: '/workspace/adrs' },
-      render: () => <ADRPage ctx={ctx} workspaceId="" />,
-    })
-
-    ctx.register({
-      id: 'journal',
-      area: 'routes',
-      title: 'Workspace Journal',
-      data: { path: '/workspace/journal' },
-      render: () => <JournalPage ctx={ctx} workspaceId="" />,
-    })
-
-    ctx.register({
-      id: 'roadmaps',
-      area: 'routes',
-      title: 'Workspace Roadmaps',
-      data: { path: '/workspace/roadmaps' },
-      render: () => <RoadmapsPage ctx={ctx} />,
-    })
-
-    ctx.register({
-      id: 'tasks',
-      area: 'routes',
-      title: 'Workspace Tasks',
-      data: { path: '/workspace/tasks' },
-      render: () => <TasksPage ctx={ctx} />,
-    })
-
-    ctx.register({
-      id: 'search',
-      area: 'routes',
-      title: 'Workspace Search',
-      data: { path: '/workspace/search' },
-      render: () => <SearchPage ctx={ctx} />,
-    })
-
-    ctx.register({
-      id: 'analytics',
-      area: 'routes',
-      title: 'Workspace Analytics',
-      data: { path: '/workspace/analytics' },
-      render: () => <AnalyticsPage ctx={ctx} />,
-    })
-
-    ctx.register({
-      id: 'assistant',
-      area: 'routes',
-      title: 'Workspace Assistant',
-      data: { path: '/workspace/assistant' },
-      render: () => <AssistantPage ctx={ctx} />,
+      render: () => <WorkspaceShell ctx={ctx} />,
     })
 
     ctx.register({

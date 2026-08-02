@@ -47,11 +47,48 @@ Master document for the Hermes AI Agent project — architecture, milestones, co
 | S7.2 — Project Scope & Authority Alignment | ✓ | 62 (+8 desktop) |
 | S7.2R — Repository Recovery & Baseline Restoration | ✓ | 451 (+8 desktop) |
 | S7.3A — Canonical ADR Reconciliation | ✓ | 71 (+7 desktop) |
-| S7.U1 — Upstream Hermes Reconciliation (U1A only) | U1A ✓ | 522 backend on modern upstream |
+| S7.U1 — Upstream Hermes Reconciliation | U1A ✓ · U1B ✓ · U1C ✓ | 522 backend; 35 desktop vitest |
 
 ### Current Milestone
 
-**S7.U1 — Upstream Hermes Reconciliation (U1A — Baseline & Workspace Transplant COMPLETE)**
+**S7.U1 — Upstream Hermes Reconciliation (U1C — Desktop Plugin SDK & Runtime Adaptation COMPLETE)**
+
+U1B's compatibility audit concluded the Workspace desktop plugin needed
+adaptation to the current Hermes Desktop SDK boundary; U1C delivered it:
+
+- **SDK-only boundary.** Workspace imports are now `@hermes/plugin-sdk` (+
+  react) or plugin-local; the plugin directory was flattened to the current
+  upstream single-directory convention (the plugin fence forbids `../`
+  imports). No `@/` application internals remain.
+- **Session identity.** `host.state.activeSessionId` (volatile runtime id)
+  is never sent as `session_id`; scope resolution uses only sanctioned
+  `host.state.cwd` + `host.state.profile` against the backend
+  `ProjectScopeResolver`.
+- **Scope re-home.** New `unavailable` + bounded Retry states; fresh
+  drafts resolve from sanctioned CWD; backfill refreshes scope and
+  invalidates queries; assistant conversation state resets on scope change;
+  request data moved into React Query keyed by effective workspace.
+- **REST contract.** Mutation wrappers pass plain object bodies
+  (`ctx.rest()` serializes them itself).
+- **Navigation.** One contributed `/workspace` route per the current
+  one-segment contract; eight surfaces switch via internal navigation
+  (`workspace-shell.tsx`).
+- **Component contracts.** `ConfirmDialog` `onClose`, `MiniBar` label,
+  `SearchField` `containerClassName`, Button/Badge variants.
+- **Verification.** typecheck ✓, lint ✓ (0 errors in plugin), UI tests ✓
+  (35 Workspace; suite 3322/3323 — the lone failure is a pre-existing
+  timing-sensitive fuzz test in `src/lib/markdown-blocks.test.ts` that
+  passes in isolation), `npm run build` ✓. Smoke: production Electron boots
+  the renderer without exceptions; the interactive first-run setup choice
+  stalls in this source-checkout/headless host (environment, not code).
+- **Core files modified: NONE.**
+
+Remaining U1D (backend): profile-scoped database/service singletons,
+SQLite concurrency + migration locking, WAL fallback conventions, API
+authorization hardening, approval/audit alignment with host primitives,
+ADR reconciliation hardening, backup/profile-distribution coverage.
+
+U1A record (transplant):
 
 The Workspace Platform was transplanted onto current `origin/main`
 (`cd6585abf`) via an isolated integration worktree
@@ -156,7 +193,7 @@ Design record: `docs/reverse_engineering/ProjectScopeAuthorityDesign.md`.
 
 | Milestone | Purpose |
 |-----------|---------|
-| S7.U1 — Upstream Hermes Reconciliation | U1A ✓ (transplant + baseline). U1B — Core/API compat · U1C — Desktop plugin SDK/runtime-plugin adaptation (requires Node ≥22.22 toolchain) · U1D — Workspace backend integration verification · U1E — Kanban/task authority reconciliation · U1F — regression/security/upgrade verification |
+| S7.U1 — Upstream Hermes Reconciliation | U1A ✓ (transplant + baseline). U1B ✓ — Core/API compat · U1C ✓ — Desktop plugin SDK/runtime-plugin adaptation (Node v22.23.2) · U1D — Workspace backend integration verification · U1E — Kanban/task authority reconciliation · U1F — regression/security/upgrade verification |
 | S6.5 — Testing & CI | Fuzzing, security scanning, pen test scenarios, security guide (prerequisite for S7.6) |
 | S7.3 — Canonical Artifact & Task Reconciliation | Git-first ADRs (S7.3A ✓ on old base), Kanban-first tasks (S7.3B — redesign onto modern project-scoped Kanban) |
 | S7.4 — Workspace Context Adapter & Inspector | Bounded context via `pre_llm_call` + preview parity |

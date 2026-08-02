@@ -1,8 +1,6 @@
 /**
- * Roadmap nanostores — reactive state for the Roadmaps UI.
+ * Roadmap nanostores — types for the Roadmaps UI.
  */
-
-import { atom } from 'nanostores'
 
 // ---------------------------------------------------------------------------
 // Types (mirrors backend models)
@@ -67,11 +65,5 @@ export interface MilestoneListResponse {
   milestones: RoadmapMilestone[]
 }
 
-// ---------------------------------------------------------------------------
-// Stores
-// ---------------------------------------------------------------------------
-
-export const $roadmaps = atom<Roadmap[]>([])
-export const $selectedRoadmapId = atom<string | null>(null)
-export const $milestones = atom<RoadmapMilestone[]>([])
-export const $roadmapsLoading = atom<boolean>(false)
+// No atoms here: request-shaped data (roadmaps, milestones) lives in
+// React Query, keyed by workspace/roadmap — see roadmaps-page.tsx.

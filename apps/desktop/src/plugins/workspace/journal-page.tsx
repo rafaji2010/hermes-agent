@@ -1,32 +1,48 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useStore } from '@nanostores/react'
+/**
+ * Journal Page — browse, search, filter, create, edit, delete journal entries.
+ *
+ * U1C: the resolved project scope is the single source of truth for the
+ * workspace (`scope.ts`); queries are gated on it and never widen.
+ */
+
+import {
+  Button,
+  cn,
+  Codicon,
+  ConfirmDialog,
+  Contribute,
+  EmptyState,
+  ErrorState,
+  Input,
+  Loader,
+  type PluginContext,
+  SearchField,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  useQuery,
+  useQueryClient,
+  useValue,
+} from '@hermes/plugin-sdk'
 import { useCallback, useState } from 'react'
 
-import { Contribute } from '@/contrib/react/contribute'
-import type { PluginContext } from '@/contrib/plugin'
-import { Button } from '@/components/ui/button'
-import { ErrorState } from '@/components/ui/error-state'
-import { Loader } from '@/components/ui/loader'
-import { SearchField } from '@/components/ui/search-field'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Input } from '@/components/ui/input'
-import { ConfirmDialog } from '@/components/ui/confirm-dialog'
-import { EmptyState } from '@/components/ui/empty-state'
-import { Codicon } from '@/components/ui/codicon'
-import { cn } from '@/lib/utils'
-
 import {
-  $journalEntries, $journalSearchQuery, $journalTagFilter, $journalDateFilter,
-  $journalEditorOpen, $journalEditingId,
+  $journalDateFilter,
+  $journalEditingId,
+  $journalEditorOpen,
+  $journalSearchQuery,
+  $journalTagFilter,
   type JournalEntry,
-} from './stores/journal'
+} from './journal'
 import {
-  fetchJournalEntries, createJournalEntry as apiCreate,
-  updateJournalEntry as apiUpdate, deleteJournalEntry as apiDelete,
-} from './lib/journal-api'
+  deleteJournalEntry as apiDelete,
+  fetchJournalEntries,
+} from './journal-api'
 import { JournalEditor } from './journal-editor'
+import { scopeReady, useWorkspaceScope } from './scope'
 import { WorkspaceScopeNotice } from './scope-notice'
-import { scopeReady, useWorkspaceScope } from './stores/scope'
 
 function JournalTitlebar() {
   return (
@@ -59,7 +75,7 @@ function JournalRow({ entry, selected, onSelect }: {
       {entry.tags.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1">
           {entry.tags.slice(0, 5).map(t => (
-            <span key={t} className="rounded bg-(--ui-bg-quaternary) px-1.5 py-px text-[10px] text-(--ui-text-tertiary)">{t}</span>
+            <span className="rounded bg-(--ui-bg-quaternary) px-1.5 py-px text-[10px] text-(--ui-text-tertiary)" key={t}>{t}</span>
           ))}
         </div>
       )}
@@ -67,17 +83,19 @@ function JournalRow({ entry, selected, onSelect }: {
   )
 }
 
-interface JournalPageProps { ctx: PluginContext; workspaceId: string }
+interface JournalPageProps { ctx: PluginContext }
 
-export function JournalPage({ ctx, workspaceId }: JournalPageProps) {
+export function JournalPage({ ctx }: JournalPageProps) {
   const queryClient = useQueryClient()
   const scope = useWorkspaceScope(ctx)
-  const ws = scopeReady(scope) ? scope.workspaceId : workspaceId
-  const searchQuery = useStore($journalSearchQuery)
-  const tagFilter = useStore($journalTagFilter)
-  const dateFilter = useStore($journalDateFilter)
-  const editorOpen = useStore($journalEditorOpen)
-  const editingId = useStore($journalEditingId)
+  // The resolved project scope is authoritative. An unresolvable scope
+  // yields '' and gates every query off.
+  const ws = scopeReady(scope) ? scope.workspaceId : ''
+  const searchQuery = useValue($journalSearchQuery)
+  const tagFilter = useValue($journalTagFilter)
+  const dateFilter = useValue($journalDateFilter)
+  const editorOpen = useValue($journalEditorOpen)
+  const editingId = useValue($journalEditingId)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [deleteId, setDeleteId] = useState<string | null>(null)
 
@@ -87,15 +105,17 @@ export function JournalPage({ ctx, workspaceId }: JournalPageProps) {
     enabled: Boolean(ws),
     staleTime: 10_000,
   })
+
   const entries = q.data?.entries ?? []
   const selected = entries.find(e => e.id === selectedId) ?? null
   const tags = [...new Set(entries.flatMap(e => e.tags))].sort()
 
   const handleDelete = useCallback(async () => {
-    if (!deleteId) return
+    if (!deleteId) {return}
     await apiDelete(ctx, deleteId)
     setDeleteId(null)
-    if (selectedId === deleteId) setSelectedId(null)
+
+    if (selectedId === deleteId) {setSelectedId(null)}
     queryClient.invalidateQueries({ queryKey: ['workspace', 'journal'] })
   }, [ctx, deleteId, queryClient, selectedId])
 
@@ -112,7 +132,7 @@ export function JournalPage({ ctx, workspaceId }: JournalPageProps) {
 
       <div className="flex items-center justify-between border-b border-(--ui-stroke-tertiary) px-6 py-2.5">
         <div className="flex flex-wrap items-center gap-2">
-          <SearchField className="w-56" onChange={v => $journalSearchQuery.set(v)} placeholder="Search entries..." value={$journalSearchQuery.get()} />
+          <SearchField containerClassName="w-56" onChange={v => $journalSearchQuery.set(v)} placeholder="Search entries..." value={searchQuery} />
           <Input className="h-7 w-[140px] text-xs" onChange={e => $journalDateFilter.set(e.target.value)} placeholder="YYYY-MM-DD" type="date" value={dateFilter} />
           {tags.length > 0 && (
             <Select onValueChange={v => $journalTagFilter.set(v)} value={tagFilter}>
@@ -130,9 +150,9 @@ export function JournalPage({ ctx, workspaceId }: JournalPageProps) {
       <div className="flex flex-1 overflow-hidden">
         <div className="w-80 shrink-0 overflow-auto border-r border-(--ui-stroke-tertiary) p-3">
           {q.isLoading ? <div className="flex justify-center py-12"><Loader type="lemniscate-bloom" /></div>
-          : q.isError ? <ErrorState title="Failed" description="Could not load entries." />
-          : entries.length === 0 ? <EmptyState title="No entries" description="Create your first journal entry." />
-          : <div className="space-y-2">{entries.map(e => <JournalRow key={e.id} entry={e} selected={selectedId === e.id} onSelect={setSelectedId} />)}</div>}
+          : q.isError ? <ErrorState description="Could not load entries." title="Failed" />
+          : entries.length === 0 ? <EmptyState description="Create your first journal entry." title="No entries" />
+          : <div className="space-y-2">{entries.map(e => <JournalRow entry={e} key={e.id} onSelect={setSelectedId} selected={selectedId === e.id} />)}</div>}
         </div>
 
         <div className="flex-1 overflow-auto">
@@ -152,7 +172,7 @@ export function JournalPage({ ctx, workspaceId }: JournalPageProps) {
                 </div>
               </div>
               {selected.summary && <p className="mb-4 text-sm text-(--ui-text-secondary) italic">{selected.summary}</p>}
-              {selected.tags.length > 0 && <div className="mb-4 flex flex-wrap gap-1">{selected.tags.map(t => <span key={t} className="rounded bg-(--ui-bg-quaternary) px-1.5 py-px text-[10px] text-(--ui-text-tertiary)">{t}</span>)}</div>}
+              {selected.tags.length > 0 && <div className="mb-4 flex flex-wrap gap-1">{selected.tags.map(t => <span className="rounded bg-(--ui-bg-quaternary) px-1.5 py-px text-[10px] text-(--ui-text-tertiary)" key={t}>{t}</span>)}</div>}
               <pre className="whitespace-pre-wrap font-mono text-sm text-(--ui-text-secondary)">{selected.markdown || '(No content)'}</pre>
             </div>
           ) : (
@@ -163,13 +183,13 @@ export function JournalPage({ ctx, workspaceId }: JournalPageProps) {
 
       {editorOpen && (
         <JournalEditor
-          entry={editingId ? entries.find(e => e.id === editingId) ?? null : null}
-          ctx={ctx} workspaceId={ws}
-          onClose={() => { $journalEditorOpen.set(false); $journalEditingId.set(null) }}
+          ctx={ctx}
+          entry={editingId ? entries.find(e => e.id === editingId) ?? null : null} onClose={() => { $journalEditorOpen.set(false); $journalEditingId.set(null) }}
           onSaved={handleSaved}
+          workspaceId={ws}
         />
       )}
-      {deleteId && <ConfirmDialog open title="Delete entry?" description="This entry will be permanently deleted." onCancel={() => setDeleteId(null)} onConfirm={handleDelete} />}
+      {deleteId && <ConfirmDialog description="This entry will be permanently deleted." onClose={() => setDeleteId(null)} onConfirm={handleDelete} open title="Delete entry?" />}
     </div>
   )
 }

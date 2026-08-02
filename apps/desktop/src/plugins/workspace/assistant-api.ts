@@ -1,9 +1,12 @@
 /**
- * Assistant API.
+ * Assistant API — REST wrappers for the workspace assistant.
+ *
+ * U1C: mutation bodies are plain objects — `ctx.rest()` serializes them.
  */
 
-import type { PluginContext } from '@/contrib/plugin'
-import type { ChatResponseData, Suggestion } from '../stores/assistant'
+import type { PluginContext } from '@hermes/plugin-sdk'
+
+import type { ChatResponseData, Suggestion } from './assistant'
 
 export async function chat(
   ctx: PluginContext,
@@ -13,11 +16,11 @@ export async function chat(
 ): Promise<ChatResponseData> {
   return ctx.rest<ChatResponseData>('/v1/assistant/chat', {
     method: 'POST',
-    body: JSON.stringify({
+    body: {
       question,
       conversation_id: conversationId,
       workspace_id: workspaceId,
-    }),
+    },
   })
 }
 
@@ -25,8 +28,10 @@ export async function getContext(
   ctx: PluginContext,
   question: string,
   workspaceId: string,
-): Promise<any> {
-  return ctx.rest(`/v1/assistant/context?question=${encodeURIComponent(question)}&workspace_id=${encodeURIComponent(workspaceId)}`)
+): Promise<unknown> {
+  return ctx.rest(
+    `/v1/assistant/context?question=${encodeURIComponent(question)}&workspace_id=${encodeURIComponent(workspaceId)}`,
+  )
 }
 
 export async function getSuggestions(

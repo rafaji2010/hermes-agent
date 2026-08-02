@@ -1,4 +1,4 @@
-import { atom } from 'nanostores'
+import { atom } from '@hermes/plugin-sdk'
 
 export interface JournalEntry {
   id: string
@@ -32,8 +32,7 @@ export interface JournalEntryUpdatePayload {
   tags?: string[]
 }
 
-export const $journalEntries = atom<JournalEntry[]>([])
-export const $selectedJournalId = atom<string | null>(null)
+// Atoms — pure UI state only. Request-shaped data lives in React Query.
 export const $journalSearchQuery = atom<string>('')
 export const $journalTagFilter = atom<string>('')
 export const $journalDateFilter = atom<string>('')

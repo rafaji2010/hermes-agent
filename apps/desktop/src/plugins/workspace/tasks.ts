@@ -2,7 +2,7 @@
  * Task nanostores — reactive state for task management UI.
  */
 
-import { atom } from 'nanostores'
+import { atom } from '@hermes/plugin-sdk'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -84,13 +84,6 @@ export interface TaskDependencyListResponse {
   depends_on: Task[]
 }
 
-// ---------------------------------------------------------------------------
-// Stores
-// ---------------------------------------------------------------------------
-
-export const $tasks = atom<Task[]>([])
-export const $selectedTaskId = atom<string | null>(null)
-export const $taskComments = atom<TaskComment[]>([])
-export const $taskDeps = atom<TaskDependencyListResponse>({ dependencies: [], depends_on: [] })
-export const $tasksLoading = atom<boolean>(false)
+// Atoms — pure UI state only. Request-shaped data (tasks, comments, deps)
+// lives in React Query.
 export const $taskViewMode = atom<'kanban' | 'table'>('kanban')

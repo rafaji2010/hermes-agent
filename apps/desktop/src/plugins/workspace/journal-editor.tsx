@@ -1,12 +1,18 @@
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  Input,
+  type PluginContext,
+  Separator,
+  Textarea,
+} from '@hermes/plugin-sdk'
 import { useCallback, useState } from 'react'
-import type { PluginContext } from '@/contrib/plugin'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
-import { Separator } from '@/components/ui/separator'
-import type { JournalEntry } from './stores/journal'
-import { createJournalEntry, updateJournalEntry } from './lib/journal-api'
+
+import type { JournalEntry } from './journal'
+import { createJournalEntry, updateJournalEntry } from './journal-api'
 
 interface Props {
   entry: JournalEntry | null; ctx: PluginContext; workspaceId: string
@@ -24,20 +30,26 @@ export function JournalEditor({ entry, ctx, workspaceId, onClose, onSaved }: Pro
   const isEditing = entry !== null
 
   const handleSave = useCallback(async () => {
-    if (!title.trim()) { setError('Title is required.'); return }
+    if (!title.trim()) { setError('Title is required.');
+
+ return }
+
     setSaving(true); setError(null)
+
     try {
       const tags = tagsInput.split(',').map(t => t.trim().toLowerCase()).filter(Boolean)
+
       if (isEditing) {
         await updateJournalEntry(ctx, entry!.id, { title: title.trim(), summary: summary.trim(), markdown, entry_date: entryDate, tags })
       } else {
         await createJournalEntry(ctx, { workspace_id: workspaceId, title: title.trim(), summary: summary.trim(), markdown, entry_date: entryDate, tags })
       }
+
       onSaved()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save.')
     } finally { setSaving(false) }
-  }, [title, summary, markdown, entryDate, tagsInput, isEditing])
+  }, [title, summary, markdown, entryDate, tagsInput, isEditing, entry, ctx, workspaceId, onSaved])
 
   return (
     <Dialog onOpenChange={onClose} open>

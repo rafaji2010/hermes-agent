@@ -2,7 +2,7 @@
  * Analytics nanostores.
  */
 
-import { atom } from 'nanostores'
+import { atom } from '@hermes/plugin-sdk'
 
 export interface Metric {
   label: string
@@ -74,7 +74,6 @@ export interface AutoInsight {
   entity_id: string
 }
 
-export const $analytics = atom<AnalyticsData | null>(null)
-export const $trends = atom<TrendData | null>(null)
-export const $insights = atom<AutoInsight[]>([])
+// Pure UI state only — request-shaped data (analytics, trends, insights)
+// lives in React Query.
 export const $trendPeriod = atom<number>(30)

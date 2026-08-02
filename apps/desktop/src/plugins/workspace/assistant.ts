@@ -2,7 +2,7 @@
  * Assistant nanostores.
  */
 
-import { atom } from 'nanostores'
+import { atom } from '@hermes/plugin-sdk'
 
 export interface ReferencedEntity {
   id: string
@@ -39,6 +39,5 @@ export interface Suggestion {
 
 export const $messages = atom<ChatMessage[]>([])
 export const $conversationId = atom<string>('')
-export const $suggestions = atom<Suggestion[]>([])
 export const $isThinking = atom<boolean>(false)
 export const $referencedEntities = atom<ReferencedEntity[]>([])

@@ -1,32 +1,46 @@
 /**
- * Workspace Plugin — Project Scope Store (S7.2)
+ * Workspace Plugin — Project Scope Store (S7.2, U1C)
  *
- * Bridges the Hermes Project authority (shared `projects.ts` atoms +
- * backend `projects.db`) to the Workspace plugin's workspace-scoped
- * REST surface.
+ * Bridges the Hermes Project authority (backend `projects.db` + the
+ * ProjectScopeResolver) to the Workspace plugin's workspace-scoped REST
+ * surface.
  *
  * Authority model: the BACKEND resolves the scope (`POST /v1/scope/resolve`,
  * which walks session cwd → git root → workspace mapping).  The renderer
  * caches that resolution here and never guesses.  An unresolvable scope
- * yields `unresolved` — pages must NOT query globally (the backend
- * rejects unscoped requests with 403; this store surfaces that state
- * honestly instead of letting a page silently widen).
+ * yields `unresolved` — pages must NOT query globally (the backend rejects
+ * unscoped requests with 403; this store surfaces that state honestly
+ * instead of letting a page silently widen).
  *
- * View state (which project you've entered in the sidebar) lives in the
- * shared `$projectScope` atom; the workspace id itself is workspace.db
- * state and only the backend knows it.  Re-resolve whenever the active
- * session or project scope changes.
+ * U1C — SDK boundary: this store no longer imports application-internal
+ * project/session atoms.  It consumes only the sanctioned `host.state`
+ * surfaces:
+ *
+ *   - `host.state.cwd`      — the active workspace cwd ('' when detached)
+ *   - `host.state.profile`  — the profile the live gateway is routed to
+ *
+ * IDENTITY RULE: `host.state.activeSessionId` is a VOLATILE runtime identity
+ * and is deliberately NOT sent as `session_id` — `SessionDB.get_session()`
+ * keys on the durable stored id, so the runtime id would resolve to
+ * `unresolved` (or worse, mask a valid cwd).  For U1C the frontend resolves
+ * scope from sanctioned CWD + profile only; the backend session-metadata
+ * leg remains available to callers that possess a durable stored id.
+ *
+ * View state (which project you've entered in the sidebar) is app state the
+ * backend cannot see; the effective working CWD is the sanctioned projection
+ * of it that reaches this store.  Re-resolve whenever the current CWD,
+ * profile, or runtime session changes.
  */
 
-import type { PluginContext } from '@hermes/plugin-sdk'
-import { useStore } from '@nanostores/react'
-import { atom } from 'nanostores'
+import { atom, host, type PluginContext, useValue } from '@hermes/plugin-sdk'
 import { useEffect } from 'react'
 
-import { $projectScope, ALL_PROJECTS } from '@/store/projects'
-import { $activeSessionId } from '@/store/session'
-
-export type WorkspaceScopeState = 'checking' | 'scoped' | 'partial' | 'unresolved'
+export type WorkspaceScopeState =
+  | 'checking'
+  | 'scoped'
+  | 'partial'
+  | 'unresolved'
+  | 'unavailable'
 
 export interface WorkspaceScope {
   state: WorkspaceScopeState
@@ -34,6 +48,14 @@ export interface WorkspaceScope {
   projectId: null | string
   projectSlug: null | string
   matchSource: string
+  /** Sanctioned cwd the resolution was based on ('' when detached). */
+  cwd: string
+  /** Profile the resolution ran against. */
+  profile: string
+  /** Transport/backend error message when `state === 'unavailable'`. */
+  error: string
+  /** True while an automatic retry is in flight. */
+  retrying: boolean
 }
 
 export interface ResolvedProjectScopePayload {
@@ -60,15 +82,19 @@ export const EMPTY_SCOPE: WorkspaceScope = {
   projectId: null,
   projectSlug: null,
   matchSource: 'none',
+  cwd: '',
+  profile: '',
+  error: '',
+  retrying: false,
 }
 
 export const $workspaceScope = atom<WorkspaceScope>({
+  ...EMPTY_SCOPE,
   state: 'checking',
-  workspaceId: '',
-  projectId: null,
-  projectSlug: null,
-  matchSource: 'none',
 })
+
+/** Bumped by the notice's Retry affordance to re-run resolution. */
+export const $scopeRetryTick = atom(0)
 
 // ── Pure mapping (testable, no I/O) ────────────────────────────────────────
 
@@ -82,6 +108,10 @@ export function workspaceScopeFromResolution(res: ResolvedProjectScopePayload): 
       projectId: res.project_id || null,
       projectSlug: res.project_slug || null,
       matchSource: res.match_source || 'mapping',
+      cwd: '',
+      profile: '',
+      error: '',
+      retrying: false,
     }
   }
 
@@ -92,10 +122,19 @@ export function workspaceScopeFromResolution(res: ResolvedProjectScopePayload): 
       projectId: res.project_id,
       projectSlug: res.project_slug || null,
       matchSource: res.match_source || 'none',
+      cwd: '',
+      profile: '',
+      error: '',
+      retrying: false,
     }
   }
 
-  return EMPTY_SCOPE
+  return { ...EMPTY_SCOPE }
+}
+
+/** Pure factory for the transport-failure state (backend unreachable). */
+export function workspaceScopeUnavailable(message: string): WorkspaceScope {
+  return { ...EMPTY_SCOPE, state: 'unavailable', error: message }
 }
 
 // The query params a page should send. NEVER returns a global scope —
@@ -120,15 +159,17 @@ let resolveGeneration = 0
 
 export async function refreshWorkspaceScope(ctx: PluginContext): Promise<WorkspaceScope> {
   const generation = ++resolveGeneration
-  const sessionId = $activeSessionId.get()
-  const projectScope = $projectScope.get()
+  // Sanctioned CWD + profile only. The runtime session id is a volatile
+  // identity and is NEVER sent as `session_id` (see module docstring).
+  const cwd = host.state.cwd.get()
+  const profile = host.state.profile.get()
 
-  $workspaceScope.set({ ...EMPTY_SCOPE, state: 'checking' })
+  $workspaceScope.set({ ...EMPTY_SCOPE, state: 'checking', cwd, profile })
 
-  // Outside any project scope there is nothing to resolve to — short
-  // circuit to unresolved without a round trip.
-  if (!sessionId || projectScope === ALL_PROJECTS || !projectScope) {
-    const scope = { ...EMPTY_SCOPE }
+  // Outside any working directory there is nothing to resolve to — short
+  // circuit to unresolved without a round trip. Never widens to global.
+  if (!cwd) {
+    const scope: WorkspaceScope = { ...EMPTY_SCOPE, cwd, profile }
     $workspaceScope.set(scope)
 
     return scope
@@ -137,29 +178,42 @@ export async function refreshWorkspaceScope(ctx: PluginContext): Promise<Workspa
   try {
     const res = await ctx.rest<ResolvedProjectScopePayload>('/v1/scope/resolve', {
       method: 'POST',
-      body: JSON.stringify({
-        session_id: sessionId,
+      body: {
+        session_id: '',
         workspace_id: '',
-        cwd: '',
-      }),
+        cwd,
+      },
     })
 
     if (generation !== resolveGeneration) {
       return $workspaceScope.get()
     }
 
-    const scope = workspaceScopeFromResolution(res)
+    const scope: WorkspaceScope = {
+      ...workspaceScopeFromResolution(res),
+      cwd,
+      profile,
+    }
+
     $workspaceScope.set(scope)
 
     return scope
-  } catch {
+  } catch (err) {
     if (generation !== resolveGeneration) {
       return $workspaceScope.get()
     }
 
-    $workspaceScope.set({ ...EMPTY_SCOPE })
+    const scope: WorkspaceScope = {
+      ...workspaceScopeUnavailable(
+        err instanceof Error ? err.message : 'Workspace backend unavailable.',
+      ),
+      cwd,
+      profile,
+    }
 
-    return { ...EMPTY_SCOPE }
+    $workspaceScope.set(scope)
+
+    return scope
   }
 }
 
@@ -173,11 +227,11 @@ export async function proposeBackfill(
 ): Promise<ScopeBackfillPayload> {
   return ctx.rest<ScopeBackfillPayload>('/v1/scope/backfill', {
     method: 'POST',
-    body: JSON.stringify({
+    body: {
       project_id: projectId,
       workspace_id: workspaceId,
       dry_run: true,
-    }),
+    },
   })
 }
 
@@ -189,11 +243,11 @@ export async function applyBackfill(
 ): Promise<ScopeBackfillPayload> {
   return ctx.rest<ScopeBackfillPayload>('/v1/scope/backfill', {
     method: 'POST',
-    body: JSON.stringify({
+    body: {
       project_id: projectId,
       workspace_id: workspaceId,
       dry_run: false,
-    }),
+    },
   })
 }
 
@@ -205,22 +259,26 @@ export async function linkWorkspaceToProject(
 ): Promise<void> {
   await ctx.rest(`/v1/workspaces/${encodeURIComponent(workspaceId)}/project`, {
     method: 'PUT',
-    body: JSON.stringify({ project_id: projectId }),
+    body: { project_id: projectId },
   })
 }
 
 // ── React hook ─────────────────────────────────────────────────────────────
 
-// One narrow job: keep the cached scope fresh for the session/project the
+// One narrow job: keep the cached scope fresh for the CWD/profile/session the
 // user is actually in, and return it. Pages read `workspaceId` from this.
+// Re-resolves on every sanctioned re-home signal: cwd, profile, runtime
+// session, and the notice's explicit retry tick.
 export function useWorkspaceScope(ctx: PluginContext): WorkspaceScope {
-  const scope = useStore($workspaceScope)
-  const sessionId = useStore($activeSessionId)
-  const projectScope = useStore($projectScope)
+  const scope = useValue($workspaceScope)
+  const cwd = useValue(host.state.cwd)
+  const profile = useValue(host.state.profile)
+  const activeSessionId = useValue(host.state.activeSessionId)
+  const retryTick = useValue($scopeRetryTick)
 
   useEffect(() => {
     void refreshWorkspaceScope(ctx)
-  }, [ctx, sessionId, projectScope])
+  }, [ctx, cwd, profile, activeSessionId, retryTick])
 
   return scope
 }

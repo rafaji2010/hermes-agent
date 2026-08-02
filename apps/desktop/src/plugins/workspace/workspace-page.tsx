@@ -1,20 +1,22 @@
 /**
  * Workspace Plugin — Status Page
  *
- * Administrator dashboard rendered at ``/workspace``.  Consumes the
- * enriched ``GET /v1/health`` endpoint to display plugin, backend,
+ * Administrator dashboard rendered at the Workspace overview tab.  Consumes
+ * the enriched ``GET /v1/health`` endpoint to display plugin, backend,
  * storage, database, and system status in a single round-trip.
  */
 
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useEffect, useRef, useState } from 'react'
-
-import { Contribute } from '@/contrib/react/contribute'
-import type { PluginContext } from '@/contrib/plugin'
-import { Button } from '@/components/ui/button'
-import { ErrorState } from '@/components/ui/error-state'
-import { Loader } from '@/components/ui/loader'
-import { cn } from '@/lib/utils'
+import {
+  Button,
+  cn,
+  Contribute,
+  ErrorState,
+  Loader,
+  type PluginContext,
+  useQuery,
+  useQueryClient,
+} from '@hermes/plugin-sdk'
+import { type ReactNode, useCallback, useState } from 'react'
 
 // ---------------------------------------------------------------------------
 // Status response shape  (matches backend/models.py StatusResponse)
@@ -83,13 +85,7 @@ function StatusRow({
   )
 }
 
-function Card({
-  title,
-  children,
-}: {
-  title: string
-  children: React.ReactNode
-}) {
+function Card({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-secondary) p-5">
       <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">
@@ -149,12 +145,10 @@ export function WorkspacePage({ ctx }: WorkspacePageProps) {
 
   const data = statusQuery.data
 
-  const lastRefreshTime = useRef<string>('')
-  useEffect(() => {
-    if (statusQuery.isSuccess) {
-      lastRefreshTime.current = new Date().toLocaleTimeString()
-    }
-  }, [statusQuery.isSuccess, statusQuery.dataUpdatedAt])
+  // Derived from the query's own timestamps — no mirrored refs.
+  const lastRefresh = statusQuery.dataUpdatedAt > 0
+    ? new Date(statusQuery.dataUpdatedAt).toLocaleTimeString()
+    : ''
 
   const handleRefresh = useCallback(() => {
     setRefreshKey(k => k + 1)
@@ -225,7 +219,7 @@ export function WorkspacePage({ ctx }: WorkspacePageProps) {
           </div>
           <div className="flex items-center gap-3">
             <span className="text-xs text-(--ui-text-tertiary)">
-              {lastRefreshTime.current ? `Last refresh: ${lastRefreshTime.current}` : ''}
+              {lastRefresh ? `Last refresh: ${lastRefresh}` : ''}
             </span>
             <Button
               disabled={statusQuery.isFetching}
@@ -272,34 +266,34 @@ export function WorkspacePage({ ctx }: WorkspacePageProps) {
             <StatusRow label="Name" value={data.plugin} />
             <StatusRow label="Version" value={data.plugin_version} />
             <StatusRow
+              healthy={data.status === 'ok'}
               label="Status"
               value={data.status === 'ok' ? 'Running' : 'Error'}
-              healthy={data.status === 'ok'}
             />
           </Card>
 
           {/* Backend */}
           <Card title="Backend">
-            <StatusRow label="Connected" value={data.database_connected ? 'Yes' : 'No'} healthy={data.database_connected} />
+            <StatusRow healthy={data.database_connected} label="Connected" value={data.database_connected ? 'Yes' : 'No'} />
             <StatusRow label="API Version" value={data.api_version} />
-            <StatusRow label="Health" value={data.status === 'ok' ? 'Healthy' : data.status} healthy={data.status === 'ok'} />
+            <StatusRow healthy={data.status === 'ok'} label="Health" value={data.status === 'ok' ? 'Healthy' : data.status} />
           </Card>
 
           {/* Storage */}
           <Card title="Storage">
             <StatusRow label="Provider" value={data.storage_provider} />
-            <StatusRow label="Connected" value={data.database_connected ? 'Yes' : 'No'} healthy={data.database_connected} />
-            <StatusRow label="Transactions" value={data.transaction_support ? 'Supported' : 'None'} healthy={data.transaction_support} />
-            <StatusRow label="Nesting" value={data.nested_transactions} healthy />
+            <StatusRow healthy={data.database_connected} label="Connected" value={data.database_connected ? 'Yes' : 'No'} />
+            <StatusRow healthy={data.transaction_support} label="Transactions" value={data.transaction_support ? 'Supported' : 'None'} />
+            <StatusRow healthy label="Nesting" value={data.nested_transactions} />
           </Card>
 
           {/* Database */}
           <Card title="Database">
             <StatusRow label="Schema" value={data.schema_version} />
             <StatusRow
+              healthy={dbHealthy}
               label="Migrations"
               value={data.migration_status}
-              healthy={dbHealthy}
             />
             <StatusRow label="Workspaces" value={String(data.workspace_count)} />
             <StatusRow label="Repositories" value={String(data.repository_count)} />
@@ -314,7 +308,7 @@ export function WorkspacePage({ ctx }: WorkspacePageProps) {
             <StatusRow label="Plugin Version" value={data.plugin_version} />
             <StatusRow
               label="Last Refresh"
-              value={lastRefreshTime.current || new Date().toLocaleTimeString()}
+              value={lastRefresh || new Date().toLocaleTimeString()}
             />
           </Card>
         </div>
