@@ -115,6 +115,25 @@ Capabilities with `approval_required=True` (tier 2/3) never execute automaticall
 | S7.2 — Project Scope & Authority Alignment | ✓ | 62 |
 | S7.2R — Repository Recovery & Baseline Restoration | ✓ | 451 (+8 desktop) |
 | S7.3A — Canonical ADR Reconciliation | ✓ | 71 (+7 desktop) |
+| S7.U1 — Upstream Hermes Reconciliation (U1A only) | U1A ✓ | 522 on modern upstream |
+
+### S7.U1A — Upstream Baseline & Workspace Platform Transplant
+
+Transplanted the Workspace Platform onto current `origin/main`
+(`cd6585abf`) in an isolated worktree
+(`~/Documents/AIProjects/HermesPlatform/repos/hermes-agent-upstream-integration`,
+branch `workspace-integration`, transplant commit `1bd012bf6`). Exact tree
+restore of the approved path set from checkpoint `5bcd9edee` — 135 files,
++31,994 lines; no historical commits cherry-picked (merge `c7eae8ca0`
+excluded); legacy `package-lock.json` changes excluded (origin/main's
+lockfile kept). `workspace-plugin@5bcd9edee` + `stash@{0}` untouched.
+
+Backend baseline on modern upstream: **522/522 tests pass** (fresh
+`uv sync --extra dev`; pytest 9.1.1) — zero backend adaptation needed.
+Frontend baseline toolchain-blocked (Node >=22.22 required; machine has
+Node 20.20.2) — U1C prerequisite.
+
+**Next: S7.U1B — Core/API Compatibility.**
 
 ### S7.3A — Canonical ADR Reconciliation
 
@@ -146,7 +165,7 @@ Git/file ADRs are canonical. `workspace.db` is the index/projection.
 - **Tests:** 522 backend (451 baseline + 71), 15 vitest (8 scope + 7 adr).
 
 Full design: `docs/reverse_engineering/CanonicalADRReconciliation.md`.
-**Next: S7.3B — Kanban Task Authority & Roadmap Linkage.**
+**Next: S7.U1B — Core/API Compatibility (after U1A transplant).**
 
 ### S7.2R — Repository Recovery & Baseline Restoration
 
@@ -189,7 +208,7 @@ into generic memory; only explicit, provenance-tagged lessons are promoted.
 the cached system prompt, and must NOT replace the `ContextEngine`. Project
 identity is resolved before context injection.
 
-**Next milestone: S7.3B — Kanban Task Authority & Roadmap Linkage.**
+**Next milestone: S7.U1B — Core/API Compatibility.**
 
 ### S7.2 — Project Scope & Authority Alignment
 

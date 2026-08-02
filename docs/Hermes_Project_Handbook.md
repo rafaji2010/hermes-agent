@@ -47,10 +47,39 @@ Master document for the Hermes AI Agent project — architecture, milestones, co
 | S7.2 — Project Scope & Authority Alignment | ✓ | 62 (+8 desktop) |
 | S7.2R — Repository Recovery & Baseline Restoration | ✓ | 451 (+8 desktop) |
 | S7.3A — Canonical ADR Reconciliation | ✓ | 71 (+7 desktop) |
+| S7.U1 — Upstream Hermes Reconciliation (U1A only) | U1A ✓ | 522 backend on modern upstream |
 
 ### Current Milestone
 
-**S7.3A — Canonical ADR Reconciliation (COMPLETED)**
+**S7.U1 — Upstream Hermes Reconciliation (U1A — Baseline & Workspace Transplant COMPLETE)**
+
+The Workspace Platform was transplanted onto current `origin/main`
+(`cd6585abf`) via an isolated integration worktree
+(`~/Documents/AIProjects/HermesPlatform/repos/hermes-agent-upstream-integration`,
+branch `workspace-integration`). The exact final tree from checkpoint
+`5bcd9edee` was restored for the approved path set only
+(`plugins/workspace/`, `apps/desktop/src/plugins/workspace/`,
+`apps/desktop/docs/reverse_engineering/`,
+`docs/Hermes_Project_Handbook.md`, `docs/reverse_engineering/`) — **135
+files, +31,994 lines**. The historical upstream merge `c7eae8ca0` was
+intentionally excluded (no cherry-pick of any historical commit); the
+legacy `package-lock.json` peer-marker changes were intentionally excluded
+(origin/main's lockfile preserved). `workspace-plugin@5bcd9edee` and
+`stash@{0}` remain untouched as the historical development branch.
+
+Transplant commit: `1bd012bf6` on `workspace-integration` (single commit
+directly on `origin/main`; no old Workspace history replayed — verified
+via `merge-base --is-ancestor`).
+
+Baseline results on modern upstream: **522/522 backend tests pass** with a
+fresh `uv sync --extra dev` environment (pytest 9.1.1, modern lockfile) —
+the entire Workspace backend (migrations 001–007, security, scope
+resolver, ADR reconciliation) is compatible with modern Core with zero
+adaptation. Frontend baseline (vitest + desktop build) is **toolchain
+blocked**: modern upstream requires Node >=22.22.0 / npm >=11.17.0; the
+machine has Node v20.20.2 — resolved at the start of U1C.
+
+### S7.3A — Canonical ADR Reconciliation (COMPLETED)
 
 Git/file ADRs are now canonical. Workspace stores an index/projection, not
 a competing copy of truth. Migration `007_adr_reconciliation.sql` adds
@@ -127,8 +156,9 @@ Design record: `docs/reverse_engineering/ProjectScopeAuthorityDesign.md`.
 
 | Milestone | Purpose |
 |-----------|---------|
+| S7.U1 — Upstream Hermes Reconciliation | U1A ✓ (transplant + baseline). U1B — Core/API compat · U1C — Desktop plugin SDK/runtime-plugin adaptation (requires Node ≥22.22 toolchain) · U1D — Workspace backend integration verification · U1E — Kanban/task authority reconciliation · U1F — regression/security/upgrade verification |
 | S6.5 — Testing & CI | Fuzzing, security scanning, pen test scenarios, security guide (prerequisite for S7.6) |
-| S7.3 — Canonical Artifact & Task Reconciliation | Git-first ADRs (S7.3A ✓), Kanban-first tasks (S7.3B NEXT) |
+| S7.3 — Canonical Artifact & Task Reconciliation | Git-first ADRs (S7.3A ✓ on old base), Kanban-first tasks (S7.3B — redesign onto modern project-scoped Kanban) |
 | S7.4 — Workspace Context Adapter & Inspector | Bounded context via `pre_llm_call` + preview parity |
 | S7.5 — Explicit Memory Promotion & Provenance | Promoted lessons with provenance, no auto-mirroring |
 | S7.6 — External Memory Egress & Security Validation | NetworkValidator enforcement at real client boundaries |
