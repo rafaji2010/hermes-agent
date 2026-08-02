@@ -115,7 +115,50 @@ Capabilities with `approval_required=True` (tier 2/3) never execute automaticall
 | S7.2 — Project Scope & Authority Alignment | ✓ | 62 |
 | S7.2R — Repository Recovery & Baseline Restoration | ✓ | 451 (+8 desktop) |
 | S7.3A — Canonical ADR Reconciliation | ✓ | 71 (+7 desktop) |
-| S7.U1 — Upstream Hermes Reconciliation | U1A ✓ · U1B ✓ · U1C ✓ · U1D-A ✓ | 522 backend; 35 desktop vitest |
+| S7.U1 — Upstream Hermes Reconciliation | U1A ✓ · U1B ✓ · U1C ✓ · U1D-A ✓ · U1D-B ✓ | 543 backend; 35 desktop vitest |
+
+### S7.U1D-B — SQLite Lifecycle, Concurrency & Migration Hardening
+
+Workspace SQLite behavior is hardened for realistic runtime usage
+(concurrent requests, multiple threads, multiple processes, startup
+races, interrupted migrations). REST contracts and domain semantics are
+unchanged.
+
+- **Connection ownership.** File-backed ``workspace.db`` connections are
+  THREAD-LOCAL (one configured connection per thread per
+  ``DatabaseManager``) — concurrent FastAPI threadpool handlers never
+  share a connection or interleave transactions. ``close()`` releases
+  every live connection deterministically (epoch-invalidated thread
+  slots transparently reopen). In-memory databases keep a single shared
+  connection (test path). Transaction nesting depth is a ``ContextVar``;
+  an abandoned transaction on a reused connection is rolled back before
+  a new one begins (self-heal).
+- **SQLite configuration.** WAL via the shared upstream helper
+  ``hermes_state.apply_wal_with_fallback`` (honours
+  ``database.journal_mode`` config; degrades safely to DELETE on
+  filesystems that refuse WAL); explicit ``busy_timeout``
+  (``HERMES_WORKSPACE_BUSY_TIMEOUT_MS``, default 10s); foreign keys on.
+- **Migration lifecycle.** Each migration and its version record run in
+  one ``BEGIN IMMEDIATE ... COMMIT`` transaction (atomic — a failure
+  leaves no partial schema). Per-migration sentinel checks recover from
+  a crash between schema application and version recording without
+  re-running ``ALTER`` statements. Versions from a newer schema are
+  logged and left untouched. ``MigrationRunner(conn, migrations_dir=…)``
+  is the test seam for failure-recovery tests.
+- **Cross-process initialization.** First-connect migration setup runs
+  under a bounded cross-process file lock (``<db>.init.lock``, flock /
+  msvcrt, deadline-bounded — mirrors the upstream kanban convention),
+  plus an in-process per-path memo; two Hermes processes cannot race
+  through schema migration, and a wedged lock holder cannot block
+  startup forever.
+- Tests: ``backend/tests/test_sqlite_hardening.py`` — 17 tests covering
+  connection lifecycle, rollback, self-heal, 8-thread concurrent access,
+  configuration (WAL/fallback/busy timeout/foreign keys/in-memory),
+  migration idempotency, atomic failure recovery, sentinel recovery,
+  newer-schema guard, and true cross-process concurrent initialization
+  (4 real subprocesses).
+
+**Next: S7.U1D-C — API scope + authorization enforcement.**
 
 ### S7.U1D-A — Profile-Scoped Backend Runtime Ownership
 

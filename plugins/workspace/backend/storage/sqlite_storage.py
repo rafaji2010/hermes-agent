@@ -31,10 +31,12 @@ unit's work.  This mirrors PostgreSQL / SQL Server semantics::
 
 from __future__ import annotations
 
+import contextvars
 import logging
+import sqlite3
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional
+from typing import List, Optional
 
 from ..database import get_database
 from ..models import ADR, JournalEntry, Repository, Roadmap, RoadmapMilestone, Task, TaskComment, TaskStats, Workspace
@@ -58,10 +60,14 @@ from ..models import (
 )
 from . import AbstractStorage
 
-if TYPE_CHECKING:
-    import sqlite3
-
 _log = logging.getLogger("hermes.plugins.workspace.storage")
+
+# Context-local transaction nesting depth (U1D-B): each request thread
+# tracks its own depth against its own thread-local connection, so
+# concurrent handlers never share or corrupt transaction state.
+_TXN_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "workspace_sqlite_txn_depth", default=0
+)
 
 
 def _new_id() -> str:
@@ -108,12 +114,17 @@ class SQLiteStorage(AbstractStorage):
     (owned by the profile-scoped Workspace runtime — U1D-A).  When omitted,
     the legacy module-level ``get_database()`` singleton is used (kept for
     direct-construction tests and back-compat).
+
+    U1D-B: transaction depth is CONTEXT-LOCAL (``ContextVar``) so
+    concurrent request threads each track their own nesting level against
+    their own thread-local connection.  A leftover transaction on a reused
+    connection (abandoned by a previous request) is rolled back before a
+    new one begins.
     """
 
     def __init__(self, db_path: Optional[Path] = None, db_manager=None):
         self._db_path = db_path
         self._db_manager = db_manager
-        self._transaction_depth = 0
 
     @property
     def _conn(self) -> "sqlite3.Connection":
@@ -125,13 +136,34 @@ class SQLiteStorage(AbstractStorage):
     # Transaction management
     # ------------------------------------------------------------------
 
+    @property
+    def _transaction_depth(self) -> int:
+        """Context-local transaction nesting depth (U1D-B).
+
+        Stored in a ``ContextVar`` so each request thread tracks its own
+        nesting level against its own thread-local connection.
+        """
+        return _TXN_DEPTH.get()
+
+    @_transaction_depth.setter
+    def _transaction_depth(self, value: int) -> None:
+        _TXN_DEPTH.set(value)
+
     def begin_transaction(self) -> None:
         """Start a transaction or savepoint."""
-        self._transaction_depth += 1
-        if self._transaction_depth == 1:
-            self._conn.execute("BEGIN IMMEDIATE")
+        if self._transaction_depth == 0:
+            conn = self._conn
+            # Self-heal: a reused connection may carry an abandoned
+            # transaction from an earlier request that never finished.
+            if conn.in_transaction:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+            conn.execute("BEGIN IMMEDIATE")
         else:
-            self._conn.execute(f"SAVEPOINT sp_{self._transaction_depth}")
+            self._conn.execute(f"SAVEPOINT sp_{self._transaction_depth + 1}")
+        self._transaction_depth += 1
 
     def commit(self) -> None:
         """Commit the innermost unit.
