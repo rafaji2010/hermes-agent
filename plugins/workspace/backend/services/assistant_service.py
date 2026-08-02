@@ -64,7 +64,9 @@ class WorkspaceAssistantService:
         # Gather context
         ctx = self._build_context(question, req.workspace_id)
         entities = ctx.entities
-        analytics = self._analytics.get_analytics()
+        # U1D-C: analytics are computed for the effective workspace only —
+        # never global aggregates.
+        analytics = self._analytics.get_analytics(req.workspace_id)
 
         # Check for follow-up references
         if conv_id in _CONVERSATIONS:
@@ -131,7 +133,9 @@ class WorkspaceAssistantService:
         # Expand graph: get related entities for top matches
         for e in list(entities[:5]):
             try:
-                related = self._graph.get_related(e.type, e.id)
+                # U1D-C: related lookups are workspace-scoped — the graph
+                # service rejects entities outside the effective scope.
+                related = self._graph.get_related(e.type, e.id, workspace_id)
                 for item in related.items[:5]:
                     add(item.type, item.id, item.title, item.status, f"related_to_{e.type}")
             except Exception:
@@ -311,7 +315,9 @@ class WorkspaceAssistantService:
     def get_suggestions(self, workspace_id: str = "") -> SuggestionsResponse:
         suggestions: List[Suggestion] = []
         try:
-            analytics = self._analytics.get_analytics()
+            # U1D-C: suggestions are computed for the effective workspace
+            # only — never global aggregates.
+            analytics = self._analytics.get_analytics(workspace_id)
 
             if analytics.tasks.blocked > 0:
                 suggestions.append(Suggestion(

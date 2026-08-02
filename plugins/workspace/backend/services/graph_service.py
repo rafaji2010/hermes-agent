@@ -18,6 +18,7 @@ from ..models import (
     RelatedEntity,
     RelatedItems,
     ShortestPathResponse,
+    WorkspaceNotFoundError,
 )
 from ..storage import AbstractStorage
 
@@ -34,8 +35,59 @@ class GraphService:
     # Related Items
     # ------------------------------------------------------------------
 
-    def get_related(self, entity_type: str, entity_id: str) -> RelatedItems:
-        """Return all entities related to the given entity."""
+    def entity_workspace_id(self, entity_type: str, entity_id: str) -> Optional[str]:
+        """Resolve the workspace that OWNS an entity, or ``None`` if the
+        entity does not exist.  U1D-C: the ownership boundary for every
+        related-item traversal — possession of an entity id never grants
+        access from another workspace.
+        """
+        try:
+            if entity_type == "workspace":
+                ws = self._storage.get_workspace(entity_id)
+                return ws.id if ws else None
+            if entity_type == "repository":
+                repo = self._storage.get_repository(entity_id)
+                return repo.workspace_id if repo else None
+            if entity_type == "roadmap":
+                r = self._storage.get_roadmap(entity_id)
+                return r.workspace_id if r else None
+            if entity_type == "milestone":
+                m = self._storage.get_milestone(entity_id)
+                if m is None:
+                    return None
+                r = self._storage.get_roadmap(m.roadmap_id)
+                return r.workspace_id if r else None
+            if entity_type == "adr":
+                adr = self._storage.get_adr(entity_id)
+                return adr.workspace_id if adr else None
+            if entity_type == "journal":
+                je = self._storage.get_journal_entry(entity_id)
+                return je.workspace_id if je else None
+            if entity_type == "task":
+                t = self._storage.get_task(entity_id)
+                return t.workspace_id if t else None
+        except Exception:
+            _log.exception("Error resolving workspace for %s:%s", entity_type, entity_id)
+        return None
+
+    def get_related(
+        self,
+        entity_type: str,
+        entity_id: str,
+        workspace_id: str = "",
+    ) -> RelatedItems:
+        """Return all entities related to the given entity.
+
+        U1D-C: the entity must exist AND belong to the effective Workspace
+        scope; otherwise ``WorkspaceNotFoundError`` (404) is raised — no
+        existence leak and no cross-workspace traversal.
+        """
+        entity_ws = self.entity_workspace_id(entity_type, entity_id)
+        if entity_ws is None:
+            raise WorkspaceNotFoundError(entity_id)
+        if workspace_id and entity_ws != workspace_id:
+            raise WorkspaceNotFoundError(entity_id)
+
         items: List[RelatedEntity] = []
 
         try:
@@ -328,16 +380,15 @@ class GraphService:
     def _related_journal(self, journal_id: str) -> List[RelatedEntity]:
         items: List[RelatedEntity] = []
         try:
-            entries = self._storage.list_journal_entries("")
-            for je in entries:
-                if je.id == journal_id:
-                    ws = self._storage.get_workspace(je.workspace_id)
-                    if ws:
-                        items.append(RelatedEntity(id=ws.id, type="workspace", title=ws.name, relationship="belongs_to"))
-                    tasks = self._storage.list_tasks(je.workspace_id, journal_id=journal_id)
-                    for t in tasks:
-                        items.append(RelatedEntity(id=t.id, type="task", title=t.title, relationship="logged_in", status=t.status))
-                    break
+            je = self._storage.get_journal_entry(journal_id)
+            if je is None:
+                return items
+            ws = self._storage.get_workspace(je.workspace_id)
+            if ws:
+                items.append(RelatedEntity(id=ws.id, type="workspace", title=ws.name, relationship="belongs_to"))
+            tasks = self._storage.list_tasks(je.workspace_id, journal_id=journal_id)
+            for t in tasks:
+                items.append(RelatedEntity(id=t.id, type="task", title=t.title, relationship="logged_in", status=t.status))
         except Exception:
             pass
         return items

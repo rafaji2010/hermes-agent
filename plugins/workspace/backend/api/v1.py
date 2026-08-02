@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -127,7 +128,13 @@ from ..services.search_service import SearchService
 from ..services.task_service import TaskService
 from ..services.workspace_service import WorkspaceService
 from ..security.authorization import AuthorizationMiddleware
-from ..security.resource_limits import ResourceLimiter
+from ..security.exceptions import (
+    ApprovalRequired,
+    AuthorizationDenied,
+    PolicyViolation,
+    SecurityError,
+)
+from ..security.resource_limits import ResourceLimitExceeded, ResourceLimiter
 from ..security.sandbox import PathSandbox
 
 _log = logging.getLogger("hermes.plugins.workspace.api.v1")
@@ -271,14 +278,25 @@ def _require_scope(
     """Enforce scope AND the ``workspace.scope.read`` capability.
 
     Raises ``HTTPException(403, SCOPE_UNRESOLVED)`` when the scope cannot
-    be resolved — callers must NOT fall back to a global scope.
+    be resolved — callers must NOT fall back to a global scope.  An
+    authorization denial from the capability guard is translated to 403.
     """
-    _get_authz().guard(
-        "workspace.scope.read",
-        resource_type="workspace",
-        resource_id=workspace_id or "resolve",
-        details={"session_id": session_id},
-    )
+    try:
+        _get_authz().guard(
+            "workspace.scope.read",
+            resource_type="workspace",
+            resource_id=workspace_id or "resolve",
+            details={"session_id": session_id},
+        )
+    except AuthorizationDenied as exc:
+        raise HTTPException(
+            status_code=403,
+            detail=ErrorDetail(
+                error="Authorization denied",
+                detail=str(exc),
+                code="AUTHORIZATION_DENIED",
+            ).model_dump(),
+        ) from exc
     try:
         return _enforce_scope(workspace_id, session_id, cwd)
     except ScopeResolutionError as exc:
@@ -326,6 +344,32 @@ def _guard_reassignment(current_task, payload) -> None:
         )
 
 
+def _validate_task_refs(workspace_id: str, payload) -> None:
+    """Every entity a task references must belong to the effective scope.
+
+    U1D-C: indirect cross-workspace traversal through task references is
+    rejected with 404 (no existence leak) before the task is created.
+    """
+    if payload.repository_id:
+        repo = _service().get_repository(payload.repository_id)
+        _guard_membership(repo.workspace_id if repo else "", workspace_id)
+    if payload.roadmap_id:
+        roadmap = _roadmap_service().get_roadmap(payload.roadmap_id)
+        _guard_membership(roadmap.workspace_id, workspace_id)
+    if payload.milestone_id:
+        ms = _runtime().storage.get_milestone(payload.milestone_id)
+        if ms is None:
+            raise WorkspaceNotFoundError(payload.milestone_id)
+        roadmap = _roadmap_service().get_roadmap(ms.roadmap_id)
+        _guard_membership(roadmap.workspace_id, workspace_id)
+    if payload.adr_id:
+        adr = _adr_service().get_adr(payload.adr_id)
+        _guard_membership(adr.workspace_id, workspace_id)
+    if payload.journal_id:
+        je = _journal_service().get_entry(payload.journal_id)
+        _guard_membership(je.workspace_id, workspace_id)
+
+
 # ---------------------------------------------------------------------------
 # Error handling
 # ---------------------------------------------------------------------------
@@ -340,6 +384,61 @@ def _error(status: int, exc: WorkspaceError) -> HTTPException:
             code=exc.code,
         ).model_dump(),
     )
+
+
+def _error_detail(status: int, error: str, detail: str, code: str) -> HTTPException:
+    """Build a structured HTTP error payload."""
+    return HTTPException(
+        status_code=status,
+        detail=ErrorDetail(
+            error=error,
+            detail=detail,
+            code=code,
+        ).model_dump(),
+    )
+
+
+def _api_error(exc: Exception) -> HTTPException:
+    """Translate domain/security/conflict errors into HTTP responses.
+
+    U1D-C: one narrow translation boundary so resource-membership and
+    capability enforcement produce predictable, non-leaky responses.
+    Internal/unknown failures become a logged 500 without internal detail.
+    """
+    if isinstance(exc, WorkspaceError):
+        code = getattr(exc, "code", "") or ""
+        status = 404
+        if code in (
+            "INVALID_TASK_STATUS",
+            "INVALID_TASK_PRIORITY",
+            "CIRCULAR_DEPENDENCY",
+            "INVALID_MILESTONE_STATUS",
+            "CROSS_PROJECT_REASSIGNMENT",
+            "EMPTY_TITLE",
+            "INVALID_ADR_STATUS",
+        ):
+            status = 400
+        if code in (
+            "DUPLICATE_SLUG",
+            "ADR_CANONICAL_UPDATE",
+            "ADR_CANONICAL_DELETE",
+        ):
+            status = 409
+        return _error(status, exc)
+    if isinstance(exc, AuthorizationDenied):
+        return _error_detail(403, "Authorization denied", str(exc), "AUTHORIZATION_DENIED")
+    if isinstance(exc, ApprovalRequired):
+        return _error_detail(403, "Approval required", str(exc), "APPROVAL_REQUIRED")
+    if isinstance(exc, PolicyViolation):
+        return _error_detail(403, "Policy violation", str(exc), "POLICY_VIOLATION")
+    if isinstance(exc, ResourceLimitExceeded):
+        return _error_detail(413, "Resource limit exceeded", str(exc), "RESOURCE_LIMIT_EXCEEDED")
+    if isinstance(exc, sqlite3.IntegrityError):
+        return _error_detail(409, "Integrity conflict", str(exc), "INTEGRITY_CONFLICT")
+    if isinstance(exc, SecurityError):
+        return _error_detail(403, "Security error", str(exc), "SECURITY_ERROR")
+    _log.exception("Unhandled Workspace API error", exc_info=exc)
+    return _error_detail(500, "Internal error", "Internal server error.", "INTERNAL_ERROR")
 
 
 # ---------------------------------------------------------------------------
@@ -823,13 +922,16 @@ def register_repository(payload: RepositoryRegister):
 
 @router.get("/adrs", response_model=ADRList)
 def list_adrs(
-    workspace_id: str = Query(..., description="Workspace ID."),
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
     status: Optional[str] = Query(default=None),
     category: Optional[str] = Query(default=None),
     tag: Optional[str] = Query(default=None),
     q: Optional[str] = Query(default=None, description="Search title + body."),
 ):
-    """List ADRs with optional filters."""
+    """List ADRs with optional filters — never wider than the effective
+    Workspace scope."""
+    workspace_id = _require_scope(workspace_id, session_id)
     try:
         adrs = _adr_service().list_adrs(
             workspace_id,
@@ -977,27 +1079,32 @@ def update_adr_file(
 
 
 @router.post("/adrs", response_model=ADRList, status_code=201)
-def create_adr(payload: ADRCreate):
-    """Create an ADR.  Slug is auto-generated from title."""
+def create_adr(payload: ADRCreate, session_id: str = Query(default="")):
+    """Create an ADR.  Slug is auto-generated from title.
+
+    The ADR is created in the effective Workspace scope — a caller
+    cannot create an ADR in a workspace it has not declared as its scope.
+    """
+    payload.workspace_id = _require_scope(payload.workspace_id, session_id)
     try:
         adr = _adr_service().create_adr(payload)
-    except WorkspaceError as exc:
-        code = exc.code
-        status = 409 if code in ("DUPLICATE_SLUG",) else 400
-        raise _error(status, exc) from exc
+    except Exception as exc:
+        raise _api_error(exc) from exc
     return ADRList(adrs=[adr])
 
 
 @router.get("/adrs/{adr_id}", response_model=ADRList)
 def get_adr(
     adr_id: str,
-    workspace_id: str = Query(default="", description="Membership check scope."),
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
 ):
     """Get a single ADR by id.
 
-    When ``workspace_id`` is supplied the ADR's workspace is verified;
-    cross-workspace lookups return 404 (no existence leak).
+    The effective Workspace scope is required — an ADR belonging to a
+    different workspace returns 404 (no existence leak).
     """
+    workspace_id = _require_scope(workspace_id, session_id)
     try:
         adr = _adr_service().get_adr(adr_id)
         _guard_membership(adr.workspace_id, workspace_id)
@@ -1007,17 +1114,25 @@ def get_adr(
 
 
 @router.put("/adrs/{adr_id}", response_model=ADRList)
-def update_adr(adr_id: str, payload: ADRUpdate):
+def update_adr(
+    adr_id: str,
+    payload: ADRUpdate,
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+):
     """Update an ADR.  All fields optional — omitted fields are unchanged.
 
     Canonical (git_file) ADRs cannot be edited through the DB CRUD path —
     edit the canonical file via ``PUT /v1/adrs/{id}/file`` instead.
     """
+    workspace_id = _require_scope(workspace_id, session_id)
     try:
+        current = _adr_service().get_adr(adr_id)
+        _guard_membership(current.workspace_id, workspace_id)
         adr = _adr_service().update_adr(adr_id, payload)
     except WorkspaceError as exc:
         code = exc.code
-        status = 404 if code == "ADR_NOT_FOUND" else 400
+        status = 404 if code in ("ADR_NOT_FOUND", "WORKSPACE_NOT_FOUND") else 400
         if code == "DUPLICATE_SLUG":
             status = 409
         if code in ("ADR_CANONICAL_UPDATE",):
@@ -1027,13 +1142,20 @@ def update_adr(adr_id: str, payload: ADRUpdate):
 
 
 @router.delete("/adrs/{adr_id}")
-def delete_adr(adr_id: str):
+def delete_adr(
+    adr_id: str,
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+):
     """Delete a DB-only ADR and its content/tags.
 
     Canonical (git_file) ADRs cannot be deleted through the DB — delete
     the canonical file in the repository, then reconcile.
     """
+    workspace_id = _require_scope(workspace_id, session_id)
     try:
+        current = _adr_service().get_adr(adr_id)
+        _guard_membership(current.workspace_id, workspace_id)
         _adr_service().delete_adr(adr_id)
     except ADRCanonicalDeleteError as exc:
         raise _error(409, exc) from exc
@@ -1049,14 +1171,17 @@ def delete_adr(adr_id: str):
 
 @router.get("/journal", response_model=JournalEntryList)
 def list_journal_entries(
-    workspace_id: str = Query(..., description="Workspace ID."),
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
     repository_id: Optional[str] = Query(default=None),
     tag: Optional[str] = Query(default=None),
     date: Optional[str] = Query(default=None, description="YYYY-MM-DD."),
     q: Optional[str] = Query(default=None, description="Search title/summary/body."),
     limit: Optional[int] = Query(default=None),
 ):
-    """List journal entries with optional filters, newest first."""
+    """List journal entries with optional filters, newest first — never
+    wider than the effective Workspace scope."""
+    workspace_id = _require_scope(workspace_id, session_id)
     try:
         entries = _journal_service().list_entries(
             workspace_id,
@@ -1072,25 +1197,28 @@ def list_journal_entries(
 
 
 @router.post("/journal", response_model=JournalEntryList, status_code=201)
-def create_journal_entry(payload: JournalEntryCreate):
-    """Create a journal entry."""
+def create_journal_entry(payload: JournalEntryCreate, session_id: str = Query(default="")):
+    """Create a journal entry in the effective Workspace scope."""
+    payload.workspace_id = _require_scope(payload.workspace_id, session_id)
     try:
         entry = _journal_service().create_entry(payload)
-    except WorkspaceError as exc:
-        raise _error(400, exc) from exc
+    except Exception as exc:
+        raise _api_error(exc) from exc
     return JournalEntryList(entries=[entry])
 
 
 @router.get("/journal/{entry_id}", response_model=JournalEntryList)
 def get_journal_entry(
     entry_id: str,
-    workspace_id: str = Query(default="", description="Membership check scope."),
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
 ):
     """Get a single journal entry.
 
-    When ``workspace_id`` is supplied the entry's workspace is verified;
-    cross-workspace lookups return 404 (no existence leak).
+    The effective Workspace scope is required — an entry belonging to a
+    different workspace returns 404 (no existence leak).
     """
+    workspace_id = _require_scope(workspace_id, session_id)
     try:
         entry = _journal_service().get_entry(entry_id)
         _guard_membership(entry.workspace_id, workspace_id)
@@ -1100,21 +1228,36 @@ def get_journal_entry(
 
 
 @router.put("/journal/{entry_id}", response_model=JournalEntryList)
-def update_journal_entry(entry_id: str, payload: JournalEntryUpdate):
+def update_journal_entry(
+    entry_id: str,
+    payload: JournalEntryUpdate,
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+):
     """Update a journal entry.  All fields optional."""
+    workspace_id = _require_scope(workspace_id, session_id)
     try:
+        current = _journal_service().get_entry(entry_id)
+        _guard_membership(current.workspace_id, workspace_id)
         entry = _journal_service().update_entry(entry_id, payload)
     except WorkspaceError as exc:
         code = exc.code
-        status = 404 if code == "JOURNAL_ENTRY_NOT_FOUND" else 400
+        status = 404 if code in ("JOURNAL_ENTRY_NOT_FOUND", "WORKSPACE_NOT_FOUND") else 400
         raise _error(status, exc) from exc
     return JournalEntryList(entries=[entry])
 
 
 @router.delete("/journal/{entry_id}")
-def delete_journal_entry(entry_id: str):
+def delete_journal_entry(
+    entry_id: str,
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+):
     """Delete a journal entry."""
+    workspace_id = _require_scope(workspace_id, session_id)
     try:
+        current = _journal_service().get_entry(entry_id)
+        _guard_membership(current.workspace_id, workspace_id)
         _journal_service().delete_entry(entry_id)
     except WorkspaceError as exc:
         raise _error(404, exc) from exc
@@ -1128,9 +1271,12 @@ def delete_journal_entry(entry_id: str):
 
 @router.get("/roadmaps", response_model=RoadmapList)
 def list_roadmaps(
-    workspace_id: str = Query(..., description="Workspace ID."),
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
 ):
-    """List all roadmaps in a workspace, ordered by creation date descending."""
+    """List all roadmaps in a workspace, ordered by creation date descending —
+    never wider than the effective Workspace scope."""
+    workspace_id = _require_scope(workspace_id, session_id)
     try:
         roadmaps = _roadmap_service().list_roadmaps(workspace_id)
     except WorkspaceError as exc:
@@ -1167,19 +1313,36 @@ def get_roadmap(
 
 
 @router.put("/roadmaps/{roadmap_id}", response_model=RoadmapList)
-def update_roadmap(roadmap_id: str, payload: RoadmapUpdate):
+def update_roadmap(
+    roadmap_id: str,
+    payload: RoadmapUpdate,
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+):
     """Update a roadmap. All fields optional."""
+    workspace_id = _require_scope(workspace_id, session_id)
     try:
+        current = _roadmap_service().get_roadmap(roadmap_id)
+        _guard_membership(current.workspace_id, workspace_id)
         roadmap = _roadmap_service().update_roadmap(roadmap_id, payload)
     except WorkspaceError as exc:
-        raise _error(404, exc) from exc
+        code = exc.code
+        status = 404 if code in ("ROADMAP_NOT_FOUND", "WORKSPACE_NOT_FOUND") else 400
+        raise _error(status, exc) from exc
     return RoadmapList(roadmaps=[roadmap])
 
 
 @router.delete("/roadmaps/{roadmap_id}")
-def delete_roadmap(roadmap_id: str):
+def delete_roadmap(
+    roadmap_id: str,
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+):
     """Delete a roadmap and all its milestones."""
+    workspace_id = _require_scope(workspace_id, session_id)
     try:
+        current = _roadmap_service().get_roadmap(roadmap_id)
+        _guard_membership(current.workspace_id, workspace_id)
         _roadmap_service().delete_roadmap(roadmap_id)
     except WorkspaceError as exc:
         raise _error(404, exc) from exc
@@ -1191,16 +1354,41 @@ def delete_roadmap(roadmap_id: str):
 # ---------------------------------------------------------------------------
 
 
+def _guarded_roadmap(roadmap_id: str, workspace_id: str, session_id: str = ""):
+    """Resolve the effective scope and verify the roadmap belongs to it.
+
+    U1D-C: when a caller declares a scope, roadmap membership is enforced
+    (404, no existence leak).  When NO scope is declared, the roadmap's
+    own workspace anchors the request (parent-resource anchoring — the
+    current Desktop plugin does not yet send ``workspace_id`` on milestone
+    calls; see U1D-G for strict enforcement).  Never widens to global.
+    """
+    try:
+        roadmap = _roadmap_service().get_roadmap(roadmap_id)
+        if workspace_id:
+            workspace_id = _require_scope(workspace_id, session_id)
+            _guard_membership(roadmap.workspace_id, workspace_id)
+        return roadmap.workspace_id
+    except WorkspaceError as exc:
+        raise _error(404, exc) from exc
+
+
 @router.put(
     "/roadmaps/{roadmap_id}/milestones/reorder",
     response_model=MilestoneList,
 )
-def reorder_milestones(roadmap_id: str, payload: MilestoneReorder):
+def reorder_milestones(
+    roadmap_id: str,
+    payload: MilestoneReorder,
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+):
     """Reorder milestones within a roadmap.
 
     IMPORTANT: must be registered BEFORE the ``{milestone_id}`` routes
     so FastAPI doesn't interpret "reorder" as a milestone ID.
     """
+    _guarded_roadmap(roadmap_id, workspace_id, session_id)
     try:
         milestones = _roadmap_service().reorder_milestones(roadmap_id, payload)
     except WorkspaceError as exc:
@@ -1211,8 +1399,13 @@ def reorder_milestones(roadmap_id: str, payload: MilestoneReorder):
 
 
 @router.get("/roadmaps/{roadmap_id}/milestones", response_model=MilestoneList)
-def list_milestones(roadmap_id: str):
+def list_milestones(
+    roadmap_id: str,
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+):
     """List all milestones for a roadmap, ordered by sort_order."""
+    _guarded_roadmap(roadmap_id, workspace_id, session_id)
     try:
         milestones = _roadmap_service().list_milestones(roadmap_id)
     except WorkspaceError as exc:
@@ -1225,8 +1418,14 @@ def list_milestones(roadmap_id: str):
     response_model=MilestoneList,
     status_code=201,
 )
-def create_milestone(roadmap_id: str, payload: MilestoneCreate):
+def create_milestone(
+    roadmap_id: str,
+    payload: MilestoneCreate,
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+):
     """Create a milestone within a roadmap."""
+    _guarded_roadmap(roadmap_id, workspace_id, session_id)
     try:
         milestone = _roadmap_service().create_milestone(roadmap_id, payload)
     except WorkspaceError as exc:
@@ -1240,8 +1439,15 @@ def create_milestone(roadmap_id: str, payload: MilestoneCreate):
     "/roadmaps/{roadmap_id}/milestones/{milestone_id}",
     response_model=MilestoneList,
 )
-def update_milestone(roadmap_id: str, milestone_id: str, payload: MilestoneUpdate):
+def update_milestone(
+    roadmap_id: str,
+    milestone_id: str,
+    payload: MilestoneUpdate,
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+):
     """Update a milestone. All fields optional."""
+    _guarded_roadmap(roadmap_id, workspace_id, session_id)
     try:
         milestone = _roadmap_service().update_milestone(milestone_id, payload)
     except WorkspaceError as exc:
@@ -1252,8 +1458,14 @@ def update_milestone(roadmap_id: str, milestone_id: str, payload: MilestoneUpdat
 
 
 @router.delete("/roadmaps/{roadmap_id}/milestones/{milestone_id}")
-def delete_milestone(roadmap_id: str, milestone_id: str):
+def delete_milestone(
+    roadmap_id: str,
+    milestone_id: str,
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+):
     """Delete a milestone."""
+    _guarded_roadmap(roadmap_id, workspace_id, session_id)
     try:
         _roadmap_service().delete_milestone(milestone_id)
     except WorkspaceError as exc:
@@ -1344,28 +1556,33 @@ def search_tasks(
 
 
 @router.post("/tasks", response_model=TaskList, status_code=201)
-def create_task(payload: TaskCreate):
-    """Create a task."""
+def create_task(payload: TaskCreate, session_id: str = Query(default="")):
+    """Create a task in the effective Workspace scope.
+
+    A task can only be created inside the effective scope; caller-supplied
+    cross-workspace references are rejected by the service.
+    """
+    payload.workspace_id = _require_scope(payload.workspace_id or "", session_id)
     try:
+        _validate_task_refs(payload.workspace_id, payload)
         task = _task_service().create_task(payload)
-    except WorkspaceError as exc:
-        code = exc.code
-        status = 400 if code in ("INVALID_TASK_STATUS", "INVALID_TASK_PRIORITY",
-                                  "CIRCULAR_DEPENDENCY") else 404
-        raise _error(status, exc) from exc
+    except Exception as exc:
+        raise _api_error(exc) from exc
     return TaskList(tasks=[task])
 
 
 @router.get("/tasks/{task_id}", response_model=TaskList)
 def get_task(
     task_id: str,
-    workspace_id: str = Query(default="", description="Membership check scope."),
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
 ):
     """Get a task with its labels, dependencies, and comment count.
 
-    When ``workspace_id`` is supplied the task's workspace is verified;
-    cross-workspace lookups return 404 (no existence leak).
+    The effective Workspace scope is required — a task belonging to a
+    different workspace returns 404 (no existence leak).
     """
+    workspace_id = _require_scope(workspace_id, session_id)
     try:
         task = _task_service().get_task(task_id)
         _guard_membership(task.workspace_id, workspace_id)
@@ -1375,14 +1592,21 @@ def get_task(
 
 
 @router.put("/tasks/{task_id}", response_model=TaskList)
-def update_task(task_id: str, payload: TaskUpdate):
+def update_task(
+    task_id: str,
+    payload: TaskUpdate,
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+):
     """Update a task. All fields optional.
 
     Reassigning a task to a workspace mapped to a DIFFERENT Hermes
     Project is rejected (``CROSS_PROJECT_REASSIGNMENT``).
     """
+    workspace_id = _require_scope(workspace_id, session_id)
     try:
         current = _task_service().get_task(task_id)
+        _guard_membership(current.workspace_id, workspace_id)
         _guard_reassignment(current, payload)
         task = _task_service().update_task(task_id, payload)
     except WorkspaceError as exc:
@@ -1395,9 +1619,16 @@ def update_task(task_id: str, payload: TaskUpdate):
 
 
 @router.delete("/tasks/{task_id}")
-def delete_task(task_id: str):
+def delete_task(
+    task_id: str,
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+):
     """Delete a task, its labels, dependencies, and comments."""
+    workspace_id = _require_scope(workspace_id, session_id)
     try:
+        current = _task_service().get_task(task_id)
+        _guard_membership(current.workspace_id, workspace_id)
         _task_service().delete_task(task_id)
     except WorkspaceError as exc:
         raise _error(404, exc) from exc
@@ -1410,9 +1641,16 @@ def delete_task(task_id: str):
 
 
 @router.get("/tasks/{task_id}/comments", response_model=TaskCommentList)
-def list_comments(task_id: str):
+def list_comments(
+    task_id: str,
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+):
     """List all comments on a task."""
+    workspace_id = _require_scope(workspace_id, session_id)
     try:
+        task = _task_service().get_task(task_id)
+        _guard_membership(task.workspace_id, workspace_id)
         comments = _task_service().list_comments(task_id)
     except WorkspaceError as exc:
         raise _error(404, exc) from exc
@@ -1420,12 +1658,27 @@ def list_comments(task_id: str):
 
 
 @router.post("/tasks/{task_id}/comments", response_model=TaskCommentList, status_code=201)
-def add_comment(task_id: str, payload: TaskCommentCreate):
-    """Add a comment to a task."""
+def add_comment(
+    task_id: str,
+    payload: TaskCommentCreate,
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+):
+    """Add a comment to a task.
+
+    When a scope is declared, task membership is enforced.  When none is
+    declared, the task's own workspace anchors the request (parent-resource
+    anchoring — the current Desktop plugin does not yet send
+    ``workspace_id`` on comment-add; see U1D-G for strict enforcement).
+    """
     try:
+        task = _task_service().get_task(task_id)
+        if workspace_id:
+            workspace_id = _require_scope(workspace_id, session_id)
+            _guard_membership(task.workspace_id, workspace_id)
         comment = _task_service().add_comment(task_id, payload)
-    except WorkspaceError as exc:
-        raise _error(404, exc) from exc
+    except Exception as exc:
+        raise _api_error(exc) from exc
     return TaskCommentList(comments=[comment])
 
 
@@ -1435,18 +1688,40 @@ def add_comment(task_id: str, payload: TaskCommentCreate):
 
 
 @router.get("/tasks/{task_id}/dependencies", response_model=TaskDependencyList)
-def get_dependencies(task_id: str):
+def get_dependencies(
+    task_id: str,
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+):
     """Get tasks that depend on this and tasks this depends on."""
+    workspace_id = _require_scope(workspace_id, session_id)
     try:
+        task = _task_service().get_task(task_id)
+        _guard_membership(task.workspace_id, workspace_id)
         return _task_service().get_dependencies(task_id)
     except WorkspaceError as exc:
         raise _error(404, exc) from exc
 
 
 @router.put("/tasks/{task_id}/dependencies", response_model=TaskDependencyList)
-def set_dependencies(task_id: str, payload: TaskDependencyCreate):
-    """Replace the dependency list for a task. Detects circular dependencies."""
+def set_dependencies(
+    task_id: str,
+    payload: TaskDependencyCreate,
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+):
+    """Replace the dependency list for a task. Detects circular dependencies.
+
+    BOTH ends of every dependency must belong to the effective Workspace
+    scope — a dependency pointing at another workspace's task is rejected.
+    """
+    workspace_id = _require_scope(workspace_id, session_id)
     try:
+        task = _task_service().get_task(task_id)
+        _guard_membership(task.workspace_id, workspace_id)
+        for dep_id in payload.depends_on_ids or []:
+            dep = _task_service().get_task(dep_id)
+            _guard_membership(dep.workspace_id, workspace_id)
         return _task_service().set_dependencies(task_id, payload)
     except WorkspaceError as exc:
         code = exc.code
@@ -1502,9 +1777,23 @@ def search(
 
 
 @router.get("/entities/{entity_type}/{entity_id}/related", response_model=RelatedItems)
-def get_related(entity_type: str, entity_id: str):
-    """Get all entities related to the given entity (backlinks and forward-links)."""
-    return _graph_service().get_related(entity_type, entity_id)
+def get_related(
+    entity_type: str,
+    entity_id: str,
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+):
+    """Get all entities related to the given entity (backlinks and forward-links).
+
+    The entity must belong to the effective Workspace scope — related-item
+    traversal can never escape the workspace or reveal a cross-workspace
+    entity (404, no existence leak).
+    """
+    workspace_id = _require_scope(workspace_id, session_id)
+    try:
+        return _graph_service().get_related(entity_type, entity_id, workspace_id)
+    except WorkspaceError as exc:
+        raise _error(404, exc) from exc
 
 
 # ---------------------------------------------------------------------------

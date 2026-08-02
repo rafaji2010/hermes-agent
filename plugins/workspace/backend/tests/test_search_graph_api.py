@@ -83,7 +83,7 @@ def test_related_items():
     roadmap_id = rr.json()["roadmaps"][0]["id"]
     c.post(f"/v1/roadmaps/{roadmap_id}/milestones", json={"title": "M"})
 
-    resp = c.get(f"/v1/entities/roadmap/{roadmap_id}/related")
+    resp = c.get(f"/v1/entities/roadmap/{roadmap_id}/related?workspace_id={ws_id}")
     assert resp.status_code == 200
     data = resp.json()
     assert data["entity_type"] == "roadmap"

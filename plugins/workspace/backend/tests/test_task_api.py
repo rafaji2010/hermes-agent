@@ -53,7 +53,9 @@ def test_create_and_list_tasks():
 
 def test_create_invalid_status():
     c = client()
-    resp = c.post("/v1/tasks", json={"title": "Bad", "status": "impossible"})
+    r = c.post("/v1/workspaces", json={"name": "bad-status-ws"})
+    ws_id = r.json()["workspaces"][0]["id"]
+    resp = c.post("/v1/tasks", json={"title": "Bad", "status": "impossible", "workspace_id": ws_id})
     assert resp.status_code == 400
 
 
@@ -64,7 +66,7 @@ def test_update_task():
     rt = c.post("/v1/tasks", json={"workspace_id": ws_id, "title": "Old"})
     task_id = rt.json()["tasks"][0]["id"]
 
-    resp = c.put(f"/v1/tasks/{task_id}", json={"title": "New", "status": "in_progress"})
+    resp = c.put(f"/v1/tasks/{task_id}?workspace_id={ws_id}", json={"title": "New", "status": "in_progress"})
     assert resp.status_code == 200
     assert resp.json()["tasks"][0]["title"] == "New"
 
@@ -76,7 +78,7 @@ def test_delete_task():
     rt = c.post("/v1/tasks", json={"workspace_id": ws_id, "title": "Del"})
     task_id = rt.json()["tasks"][0]["id"]
 
-    resp = c.delete(f"/v1/tasks/{task_id}")
+    resp = c.delete(f"/v1/tasks/{task_id}?workspace_id={ws_id}")
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
 
@@ -88,11 +90,11 @@ def test_comments():
     rt = c.post("/v1/tasks", json={"workspace_id": ws_id, "title": "Task"})
     task_id = rt.json()["tasks"][0]["id"]
 
-    resp = c.post(f"/v1/tasks/{task_id}/comments", json={"body": "Great"})
+    resp = c.post(f"/v1/tasks/{task_id}/comments?workspace_id={ws_id}", json={"body": "Great"})
     assert resp.status_code == 201
     assert resp.json()["comments"][0]["body"] == "Great"
 
-    r2 = c.get(f"/v1/tasks/{task_id}/comments")
+    r2 = c.get(f"/v1/tasks/{task_id}/comments?workspace_id={ws_id}")
     assert r2.status_code == 200
     assert len(r2.json()["comments"]) == 1
 
@@ -104,12 +106,12 @@ def test_dependencies():
     t1 = c.post("/v1/tasks", json={"workspace_id": ws_id, "title": "T1"}).json()["tasks"][0]
     t2 = c.post("/v1/tasks", json={"workspace_id": ws_id, "title": "T2"}).json()["tasks"][0]
 
-    resp = c.put(f"/v1/tasks/{t1['id']}/dependencies", json={"depends_on_ids": [t2["id"]]})
+    resp = c.put(f"/v1/tasks/{t1['id']}/dependencies?workspace_id={ws_id}", json={"depends_on_ids": [t2["id"]]})
     assert resp.status_code == 200
     data = resp.json()
     assert len(data["depends_on"]) == 1
 
-    r2 = c.get(f"/v1/tasks/{t1['id']}/dependencies")
+    r2 = c.get(f"/v1/tasks/{t1['id']}/dependencies?workspace_id={ws_id}")
     assert r2.status_code == 200
 
 
@@ -120,8 +122,8 @@ def test_circular_dependency():
     t1 = c.post("/v1/tasks", json={"workspace_id": ws_id, "title": "T1"}).json()["tasks"][0]
     t2 = c.post("/v1/tasks", json={"workspace_id": ws_id, "title": "T2"}).json()["tasks"][0]
 
-    c.put(f"/v1/tasks/{t1['id']}/dependencies", json={"depends_on_ids": [t2["id"]]})
-    resp = c.put(f"/v1/tasks/{t2['id']}/dependencies", json={"depends_on_ids": [t1["id"]]})
+    c.put(f"/v1/tasks/{t1['id']}/dependencies?workspace_id={ws_id}", json={"depends_on_ids": [t2["id"]]})
+    resp = c.put(f"/v1/tasks/{t2['id']}/dependencies?workspace_id={ws_id}", json={"depends_on_ids": [t1["id"]]})
     assert resp.status_code == 400
 
 

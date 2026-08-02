@@ -154,7 +154,7 @@ def test_materialize_preview_then_apply(temp_git_repo):
     assert resp.json()["status"] == "materialized"
     assert (temp_git_repo / "docs/adr/0001-legacy-adr.md").is_file()
 
-    adr2 = c.get(f"/v1/adrs/{adr['id']}").json()["adrs"][0]
+    adr2 = c.get(f"/v1/adrs/{adr['id']}?workspace_id={ws_id}").json()["adrs"][0]
     assert adr2["source"] == "git_file"
     assert adr2["reconcile_state"] == "synced"
     assert adr2["canonical_path"] == "docs/adr/0001-legacy-adr.md"
@@ -208,7 +208,7 @@ def test_update_file(temp_git_repo):
     assert resp.json()["status"] == "updated"
     assert "Updated" in (temp_git_repo / "docs/adr/0001-use-sqlite.md").read_text()
 
-    adr2 = c.get(f"/v1/adrs/{adr['id']}").json()["adrs"][0]
+    adr2 = c.get(f"/v1/adrs/{adr['id']}?workspace_id={ws_id}").json()["adrs"][0]
     assert "Updated" in adr2["markdown"]
     assert adr2["reconcile_state"] == "synced"
 
@@ -235,11 +235,11 @@ def test_canonical_adr_crud_guards(temp_git_repo):
     c.post("/v1/adrs/reconcile", json={"workspace_id": ws_id, "dry_run": False})
     adr = c.get(f"/v1/adrs?workspace_id={ws_id}").json()["adrs"][0]
 
-    resp = c.put(f"/v1/adrs/{adr['id']}", json={"status": "rejected"})
+    resp = c.put(f"/v1/adrs/{adr['id']}?workspace_id={ws_id}", json={"status": "rejected"})
     assert resp.status_code == 409
     assert resp.json()["detail"]["code"] == "ADR_CANONICAL_UPDATE"
 
-    resp = c.delete(f"/v1/adrs/{adr['id']}")
+    resp = c.delete(f"/v1/adrs/{adr['id']}?workspace_id={ws_id}")
     assert resp.status_code == 409
     assert resp.json()["detail"]["code"] == "ADR_CANONICAL_DELETE"
 
@@ -258,9 +258,9 @@ def test_legacy_adr_crud_still_works():
         "workspace_id": ws_id, "title": "Legacy", "status": "proposed",
     }).json()["adrs"][0]
 
-    resp = c.put(f"/v1/adrs/{adr['id']}", json={"status": "accepted"})
+    resp = c.put(f"/v1/adrs/{adr['id']}?workspace_id={ws_id}", json={"status": "accepted"})
     assert resp.status_code == 200
-    resp = c.delete(f"/v1/adrs/{adr['id']}")
+    resp = c.delete(f"/v1/adrs/{adr['id']}?workspace_id={ws_id}")
     assert resp.status_code == 200
 
 

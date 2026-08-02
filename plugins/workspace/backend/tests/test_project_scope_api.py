@@ -424,7 +424,7 @@ def test_reassignment_across_projects_rejected(scope_env):
     c.put(f"/v1/workspaces/{ws_b}/project", json={"project_id": "p_2"})
     t = c.post("/v1/tasks", json={"workspace_id": ws_a, "title": "T"}).json()["tasks"][0]
 
-    resp = c.put(f"/v1/tasks/{t['id']}", json={"workspace_id": ws_b})
+    resp = c.put(f"/v1/tasks/{t['id']}?workspace_id={ws_a}", json={"workspace_id": ws_b})
     assert resp.status_code == 400
     assert resp.json()["detail"]["code"] == "CROSS_PROJECT_REASSIGNMENT"
 
@@ -438,7 +438,7 @@ def test_reassignment_within_project_allowed(scope_env):
     c.put(f"/v1/workspaces/{ws_b}/project", json={"project_id": "p_1"})
     t = c.post("/v1/tasks", json={"workspace_id": ws_a, "title": "T"}).json()["tasks"][0]
 
-    resp = c.put(f"/v1/tasks/{t['id']}", json={"workspace_id": ws_b})
+    resp = c.put(f"/v1/tasks/{t['id']}?workspace_id={ws_a}", json={"workspace_id": ws_b})
     assert resp.status_code == 200
     assert resp.json()["tasks"][0]["workspace_id"] == ws_b
 
@@ -451,5 +451,5 @@ def test_reassignment_to_unmapped_workspace_allowed(scope_env):
     c.put(f"/v1/workspaces/{ws_a}/project", json={"project_id": "p_1"})
     t = c.post("/v1/tasks", json={"workspace_id": ws_a, "title": "T"}).json()["tasks"][0]
 
-    resp = c.put(f"/v1/tasks/{t['id']}", json={"workspace_id": ws_b})
+    resp = c.put(f"/v1/tasks/{t['id']}?workspace_id={ws_a}", json={"workspace_id": ws_b})
     assert resp.status_code == 200

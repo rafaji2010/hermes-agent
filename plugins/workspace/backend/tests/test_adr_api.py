@@ -63,7 +63,7 @@ def test_create_and_get_adr():
     assert set(adr["tags"]) == {"api", "test"}
 
     # Get
-    resp2 = c.get(f"/v1/adrs/{adr['id']}")
+    resp2 = c.get(f"/v1/adrs/{adr['id']}?workspace_id={ws_id}")
     assert resp2.status_code == 200
     assert resp2.json()["adrs"][0]["title"] == "Test ADR"
 
@@ -97,7 +97,7 @@ def test_update_adr():
         "workspace_id": ws_id, "title": "Old", "status": "proposed"
     }).json()["adrs"][0]
 
-    resp = c.put(f"/v1/adrs/{adr['id']}", json={
+    resp = c.put(f"/v1/adrs/{adr['id']}?workspace_id={ws_id}", json={
         "title": "New", "status": "accepted", "markdown": "updated"
     })
     assert resp.status_code == 200
@@ -115,12 +115,12 @@ def test_delete_adr():
         "workspace_id": ws_id, "title": "Delete Me"
     }).json()["adrs"][0]
 
-    resp = c.delete(f"/v1/adrs/{adr['id']}")
+    resp = c.delete(f"/v1/adrs/{adr['id']}?workspace_id={ws_id}")
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
 
     # verify gone
-    resp2 = c.get(f"/v1/adrs/{adr['id']}")
+    resp2 = c.get(f"/v1/adrs/{adr['id']}?workspace_id={ws_id}")
     assert resp2.status_code == 404
 
 
@@ -148,5 +148,5 @@ def test_create_adr_empty_title():
 
 def test_adr_not_found():
     c = client()
-    resp = c.get("/v1/adrs/nonexistent")
+    resp = c.get("/v1/adrs/nonexistent?workspace_id={ws_id}")
     assert resp.status_code == 404

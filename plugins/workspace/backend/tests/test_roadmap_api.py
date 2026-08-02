@@ -60,7 +60,7 @@ def test_update_roadmap():
     rr = c.post("/v1/roadmaps", json={"workspace_id": ws_id, "name": "Old"})
     roadmap_id = rr.json()["roadmaps"][0]["id"]
 
-    resp = c.put(f"/v1/roadmaps/{roadmap_id}", json={"name": "New"})
+    resp = c.put(f"/v1/roadmaps/{roadmap_id}?workspace_id={ws_id}", json={"name": "New"})
     assert resp.status_code == 200
     assert resp.json()["roadmaps"][0]["name"] == "New"
 
@@ -72,7 +72,7 @@ def test_delete_roadmap():
     rr = c.post("/v1/roadmaps", json={"workspace_id": ws_id, "name": "Del"})
     roadmap_id = rr.json()["roadmaps"][0]["id"]
 
-    resp = c.delete(f"/v1/roadmaps/{roadmap_id}")
+    resp = c.delete(f"/v1/roadmaps/{roadmap_id}?workspace_id={ws_id}")
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
 
@@ -85,7 +85,7 @@ def test_create_milestone():
     roadmap_id = rr.json()["roadmaps"][0]["id"]
 
     resp = c.post(
-        f"/v1/roadmaps/{roadmap_id}/milestones",
+        f"/v1/roadmaps/{roadmap_id}/milestones?workspace_id={ws_id}",
         json={"title": "Milestone 1", "status": "planned"},
     )
     assert resp.status_code == 201
@@ -103,7 +103,7 @@ def test_create_milestone_invalid_status():
     roadmap_id = rr.json()["roadmaps"][0]["id"]
 
     resp = c.post(
-        f"/v1/roadmaps/{roadmap_id}/milestones",
+        f"/v1/roadmaps/{roadmap_id}/milestones?workspace_id={ws_id}",
         json={"title": "Bad", "status": "nope"},
     )
     assert resp.status_code == 400
@@ -117,20 +117,20 @@ def test_reorder_milestones():
     roadmap_id = rr.json()["roadmaps"][0]["id"]
 
     m1 = c.post(
-        f"/v1/roadmaps/{roadmap_id}/milestones",
+        f"/v1/roadmaps/{roadmap_id}/milestones?workspace_id={ws_id}",
         json={"title": "A"},
     ).json()["milestones"][0]
     m2 = c.post(
-        f"/v1/roadmaps/{roadmap_id}/milestones",
+        f"/v1/roadmaps/{roadmap_id}/milestones?workspace_id={ws_id}",
         json={"title": "B"},
     ).json()["milestones"][0]
     m3 = c.post(
-        f"/v1/roadmaps/{roadmap_id}/milestones",
+        f"/v1/roadmaps/{roadmap_id}/milestones?workspace_id={ws_id}",
         json={"title": "C"},
     ).json()["milestones"][0]
 
     resp = c.put(
-        f"/v1/roadmaps/{roadmap_id}/milestones/reorder",
+        f"/v1/roadmaps/{roadmap_id}/milestones/reorder?workspace_id={ws_id}",
         json={"ids": [m3["id"], m1["id"], m2["id"]]},
     )
     assert resp.status_code == 200
@@ -146,7 +146,7 @@ def test_health_includes_roadmap_counts():
     rr = c.post("/v1/roadmaps", json={"workspace_id": ws_id, "name": "R"})
     roadmap_id = rr.json()["roadmaps"][0]["id"]
     c.post(
-        f"/v1/roadmaps/{roadmap_id}/milestones",
+        f"/v1/roadmaps/{roadmap_id}/milestones?workspace_id={ws_id}",
         json={"title": "M", "status": "completed"},
     )
 
@@ -166,16 +166,16 @@ def test_progress_updates_via_api():
     roadmap_id = rr.json()["roadmaps"][0]["id"]
 
     m = c.post(
-        f"/v1/roadmaps/{roadmap_id}/milestones",
+        f"/v1/roadmaps/{roadmap_id}/milestones?workspace_id={ws_id}",
         json={"title": "T", "status": "planned"},
     ).json()["milestones"][0]
 
     c.put(
-        f"/v1/roadmaps/{roadmap_id}/milestones/{m['id']}",
+        f"/v1/roadmaps/{roadmap_id}/milestones/{m['id']}?workspace_id={ws_id}",
         json={"status": "completed"},
     )
 
-    resp = c.get(f"/v1/roadmaps/{roadmap_id}")
+    resp = c.get(f"/v1/roadmaps/{roadmap_id}?workspace_id={ws_id}")
     data = resp.json()["roadmaps"][0]
     assert data["progress"] == 100.0
     assert data["completed_count"] == 1

@@ -52,7 +52,7 @@ def test_create_and_get():
     assert e["entry_date"] == "2026-07-20"
     assert set(e["tags"]) == {"project", "start"}
 
-    resp2 = c.get(f"/v1/journal/{e['id']}")
+    resp2 = c.get(f"/v1/journal/{e['id']}?workspace_id={ws_id}")
     assert resp2.status_code == 200
 
 
@@ -82,13 +82,13 @@ def test_update_and_delete():
     ws_id = r.json()["workspaces"][0]["id"]
     e = c.post("/v1/journal", json={"workspace_id": ws_id, "title": "Old"}).json()["entries"][0]
 
-    resp = c.put(f"/v1/journal/{e['id']}", json={"title": "New", "summary": "Updated"})
+    resp = c.put(f"/v1/journal/{e['id']}?workspace_id={ws_id}", json={"title": "New", "summary": "Updated"})
     assert resp.status_code == 200
     assert resp.json()["entries"][0]["title"] == "New"
 
-    resp = c.delete(f"/v1/journal/{e['id']}")
+    resp = c.delete(f"/v1/journal/{e['id']}?workspace_id={ws_id}")
     assert resp.status_code == 200
-    assert c.get(f"/v1/journal/{e['id']}").status_code == 404
+    assert c.get(f"/v1/journal/{e['id']}?workspace_id={ws_id}").status_code == 404
 
 
 def test_health_includes_journal_count():

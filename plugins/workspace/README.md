@@ -115,7 +115,47 @@ Capabilities with `approval_required=True` (tier 2/3) never execute automaticall
 | S7.2 — Project Scope & Authority Alignment | ✓ | 62 |
 | S7.2R — Repository Recovery & Baseline Restoration | ✓ | 451 (+8 desktop) |
 | S7.3A — Canonical ADR Reconciliation | ✓ | 71 (+7 desktop) |
-| S7.U1 — Upstream Hermes Reconciliation | U1A ✓ · U1B ✓ · U1C ✓ · U1D-A ✓ · U1D-B ✓ | 543 backend; 35 desktop vitest |
+| S7.U1 — Upstream Hermes Reconciliation | U1A ✓ · U1B ✓ · U1C ✓ · U1D-A ✓ · U1D-B ✓ · U1D-C ✓ | 563 backend; 35 desktop vitest |
+
+### S7.U1D-C — API Scope & Authorization Enforcement
+
+Every Workspace REST operation now acts only on resources the effective
+Workspace scope is authorized to access.  Invariant: possession of a
+resource ID never grants access from another Workspace scope.
+
+- **Route enforcement model.** Resource routes resolve the effective
+  scope (`workspace_id` or session/cwd via the ProjectScopeResolver) and
+  enforce membership — cross-workspace reads/writes/deletes return 404
+  (no existence leak).  List/aggregate routes are scoped at the query
+  level.  An unresolved scope returns 403 and NEVER widens to global.
+- **Coverage.** ADR + journal + roadmap + milestone + task CRUD, task
+  comments and dependencies (BOTH ends validated), related-entity
+  traversal, search/graph/analytics/export/assistant aggregates.
+  Task creation validates every referenced entity (roadmap/milestone/
+  adr/journal/repository) belongs to the effective scope.
+- **Graph.** `get_related` resolves the entity's owning workspace and
+  rejects entities outside the declared scope (404); journal related-
+  lookups are no longer global.
+- **Assistant.** Analytics and related-entity context are computed for
+  the effective workspace only.
+- **Error translation.** One boundary (`_api_error`) maps domain/security/
+  limit/conflict errors to 400/403/404/409/413/500 — no sensitive
+  internal detail is leaked and failures never masquerade as empty
+  successes.
+- **Parent-resource anchoring (documented gap).** The Desktop plugin
+  does not yet send `workspace_id` on milestone routes and comment-add;
+  those routes enforce membership when a scope IS declared and otherwise
+  anchor to the parent resource's workspace (never global).  U1D-G should
+  thread `workspace_id` through those Desktop calls, then enforce strictly.
+- **Approval/security mismatches (for U1D-F).** The transplanted S6.x
+  capability guard evaluates `workspace.scope.read` etc. but approval-
+  required decisions still permit execution (fail-open) — unchanged here.
+- Tests: `backend/tests/test_workspace_isolation.py` (20 adversarial
+  tests, workspaces A/B) covering tasks, roadmaps/milestones, ADR,
+  journal, search, graph/related/shortest-path, analytics/export,
+  assistant, unresolved-scope, and relationship validation.
+
+**Next: S7.U1D-D — Project/session/profile authority alignment.**
 
 ### S7.U1D-B — SQLite Lifecycle, Concurrency & Migration Hardening
 
