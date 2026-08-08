@@ -1,0 +1,7 @@
+{
+  "name": "workspace",
+  "label": "Workspace",
+  "description": "Workspace intelligence layer for multi-project engineering.",
+  "version": "0.1.0",
+  "api": "plugin_api.py"
+}

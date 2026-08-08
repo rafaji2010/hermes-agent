@@ -1,0 +1,5 @@
+name: workspace
+version: 0.1.0
+description: "Workspace intelligence layer for multi-project engineering."
+author: "Workspace Layer Team"
+kind: standalone
