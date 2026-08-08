@@ -15,9 +15,7 @@ Authority under test:
 
 from __future__ import annotations
 
-import sqlite3
 import sys
-import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -78,30 +76,29 @@ def _archive_project(home: Path, project_id: str) -> None:
 
 def _add_session(home: Path, session_id: str, cwd: str, git_root: str = "",
                  archived: int = 0) -> None:
-    """Insert a durable session row into the home's state.db (SessionDB schema)."""
-    db = home / "state.db"
-    conn = sqlite3.connect(db)
+    """Insert a durable session row into the home's state.db.
+
+    Uses the REAL ``SessionDB`` primitive (Hermes 0.20.0) so the row is
+    written against the authoritative schema (including the
+    ``system_prompts`` join table ``get_session`` depends on) — a
+    hand-built minimal table no longer satisfies
+    ``SessionDB.get_session()``'s ``LEFT JOIN system_prompts`` query.
+    """
+    from hermes_state import SessionDB  # type: ignore[import-untyped]
+
+    db = SessionDB(home / "state.db")
     try:
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS sessions (
-                id TEXT PRIMARY KEY,
-                source TEXT NOT NULL,
-                started_at REAL NOT NULL,
-                cwd TEXT,
-                git_repo_root TEXT,
-                profile_name TEXT,
-                archived INTEGER NOT NULL DEFAULT 0
-            )"""
+        db.create_session(
+            session_id,
+            source="test",
+            cwd=cwd,
+            git_repo_root=git_root,
+            profile_name="",
         )
-        conn.execute(
-            "INSERT OR REPLACE INTO sessions "
-            "(id, source, started_at, cwd, git_repo_root, profile_name, archived) "
-            "VALUES (?, 'test', ?, ?, ?, '', ?)",
-            (session_id, time.time(), cwd, git_root, archived),
-        )
-        conn.commit()
+        if archived:
+            db.set_session_archived(session_id, archived=True)
     finally:
-        conn.close()
+        db.close()
 
 
 class _Env:
