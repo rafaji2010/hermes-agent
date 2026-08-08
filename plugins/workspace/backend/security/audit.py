@@ -62,10 +62,16 @@ class AuditLogger:
         details: dict | None = None,
         session_id: str = "",
         correlation_id: str = "",
+        session_key: str = "",
+        profile_home: str = "",
+        turn_id: str = "",
+        tool_call_id: str = "",
     ) -> AuditEvent:
         """Write an audit event to the log.
 
-        Returns the ``AuditEvent`` that was logged.
+        Returns the ``AuditEvent`` that was logged.  ``session_key`` is the
+        host approval namespace (never a human identity); ``actor`` is only
+        ever supplied by the transport.
         """
         event = AuditEvent(
             event_id=str(uuid.uuid4()),
@@ -78,6 +84,10 @@ class AuditLogger:
             details=details or {},
             session_id=session_id,
             correlation_id=correlation_id or str(uuid.uuid4())[:8],
+            session_key=session_key,
+            profile_home=profile_home,
+            turn_id=turn_id,
+            tool_call_id=tool_call_id,
         )
         self._write_jsonl(event)
         return event
@@ -102,6 +112,10 @@ class AuditLogger:
             "details": event.details,
             "session_id": event.session_id,
             "correlation_id": event.correlation_id,
+            "session_key": event.session_key,
+            "profile_home": event.profile_home,
+            "turn_id": event.turn_id,
+            "tool_call_id": event.tool_call_id,
         }, default=str, ensure_ascii=False)
         with self._lock:
             with open(self._path, "a", encoding="utf-8") as f:

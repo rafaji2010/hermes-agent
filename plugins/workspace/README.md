@@ -60,7 +60,9 @@ REST API (v1.py)
       → PolicyEngine.evaluate(capability, context)
           → CapabilityRegistry → CapabilityDef (tier, approval, audit)
           → Custom policy rules (first-match wins)
-      → AuditLogger.log(decision) → audit.log
+      → approval_required? → ApprovalProvider (host gate, fail-closed)
+            grant → execute · deny/pending/timeout/no-channel → ApprovalRequired
+      → AuditLogger.log(decision + approval outcome + identity) → audit.log
   → Workspace Services (guarded write operations)
 ```
 
@@ -70,7 +72,8 @@ REST API (v1.py)
 |-----------|------|
 | **PolicyDecision** | Structured result: `{allowed, requires_approval, audited, reason}` — never a bare boolean |
 | **PolicyEngine** | Evaluates capabilities against the registry + custom rules; returns PolicyDecision |
-| **AuthorizationMiddleware** | Single authorization gate; consults PolicyEngine + emits audit events |
+| **AuthorizationMiddleware** | Single authorization gate; consults PolicyEngine + emits audit events; enforces fail-closed approval semantics |
+| **ApprovalProvider / HostApprovalProvider** | Injectable approval channel adopting `tools.approval.request_tool_approval()`; only an explicit grant executes; fail-closed otherwise |
 | **CapabilityRegistry** | 44 capabilities across 10 scopes (filesystem, shell, git, network, browser, search, vision, delegation, plugins, memory, config, cron, workspace) |
 | **AuditLogger** | Thread-safe JSON Lines logging; records ALLOW/DENY/APPROVAL_REQUIRED decisions |
 | **Content Labels** | Origin metadata + trust levels (trusted/untrusted/unknown) attached to content |
@@ -80,17 +83,58 @@ REST API (v1.py)
 | **Path Sandbox** | Filesystem isolation; denies system paths, hidden dirs; enforces workspace scoping |
 | **Resource Limiter** | Enforces content size, tag count, title/path length limits |
 
-### Approval Workflow
+### Approval Workflow (U1D-F)
 
-Capabilities with `approval_required=True` (tier 2/3) never execute automatically. The middleware returns an `APPROVAL_REQUIRED` status. Callers must handle the approval flow explicitly. Backend only — no frontend dialogs.
+Capabilities with `approval_required=True` never execute automatically and
+never execute without an actual approval grant. The middleware enforces
+three distinct execution states:
+
+| State | Meaning | Execution |
+|-------|---------|-----------|
+| `allowed` | Policy permits, no approval needed | proceeds |
+| `approval_pending` | Approval required, not yet granted | `ApprovalRequired` raised — MUST NOT execute |
+| `denied` | Policy or human refused | `AuthorizationDenied` / `ApprovalRequired` raised — MUST NOT execute |
+
+The `AuthorizationMiddleware.guard()` consults an injectable
+`ApprovalProvider` when a capability is approval-required. The default
+provider (`HostApprovalProvider`) adopts the Hermes host approval gate
+(`tools.approval.request_tool_approval()` — the same gate dangerous shell
+patterns and plugin `pre_tool_call` escalations use). Only an explicit host
+verdict `{"approved": true}` grants execution. Denial, gateway-pending
+(`approval_required`), timeout/failure, and "no human channel" all fail
+closed — the operation is blocked, never executed, and the outcome is
+audited (`approve.<capability>` events with `ALLOW:approved` /
+`DENY:approval_denied` / `APPROVAL_PENDING` / `APPROVAL_UNAVAILABLE`).
+
+Hard rules (U1D-F):
+
+- Approval-required operations MUST NOT execute without a grant.
+- A REST request does NOT automatically carry a Hermes gateway approval
+  callback — the host gate fails closed in that situation.
+- `hermes approvals test` is a read-only command *detector*, never the
+  Workspace authorization engine.
+- `session_key` is the host approval namespace, never a human identity.
+  Workspace never infers an actor from `session_key`.
+- YOLO / `approvals.mode: off` does not bypass protected instruction-file
+  writes (host-gated) and does not bypass this provider.
 
 ### Capability Tiers
 
 | Tier | Description | Examples |
 |------|-------------|----------|
-| 1 | Auto-approve, audited | `workspace.create`, `adr.update`, `task.create` |
-| 2 | User approval required | `workspace.delete`, `roadmap.delete`, `fs.write` |
-| 3 | Admin only | `shell.sudo`, `git.force_push`, `config.write` |
+| 1 | Auto-approve, audited | `workspace.create`, `adr.update`, `task.create`, `roadmap.delete`, `workspace.scope.link`, `adr.reconcile.write` |
+| 2 | Approval required (host-gated, fail-closed) | `workspace.delete` (not yet enforced), `fs.write` (unused scaffold) |
+| 3 | Admin only | `shell.sudo`, `git.force_push`, `config.write` (unused scaffold) |
+
+U1D-F re-tiered the workspace-domain capabilities that are exercised by
+explicit desktop user actions (`roadmap.delete`, `workspace.scope.link`,
+`adr.reconcile.write`) from tier-2 approval-required to tier-1 audited:
+the REST layer has no per-request human approval channel, and each of these
+operations is an explicit human-initiated action already protected by its
+own safeguards (scope-notice confirmation for linking, U1D-E CAS/no-clobber
+for ADR files). Genuinely sensitive operations remain approval-required and
+fail closed until a real host approval channel is wired (see remaining
+limitations).
 
 ## Milestones
 
@@ -115,7 +159,70 @@ Capabilities with `approval_required=True` (tier 2/3) never execute automaticall
 | S7.2 — Project Scope & Authority Alignment | ✓ | 62 |
 | S7.2R — Repository Recovery & Baseline Restoration | ✓ | 451 (+8 desktop) |
 | S7.3A — Canonical ADR Reconciliation | ✓ | 71 (+7 desktop) |
-| S7.U1 — Upstream Hermes Reconciliation | U1A ✓ · U1B ✓ · U1C ✓ · U1D-A ✓ · U1D-B ✓ · U1D-C ✓ · U1D-D ✓ · U1D-E ✓ | 612 backend; 35 desktop vitest |
+| S7.U1 — Upstream Hermes Reconciliation | U1A ✓ · U1B ✓ · U1C ✓ · U1D-A ✓ · U1D-B ✓ · U1D-C ✓ · U1D-D ✓ · U1D-E ✓ · U1D-F ✓ | 630 backend; 35 desktop vitest |
+
+### S7.U1D-F — Approval Semantics, Audit Identity & Adoption Boundary
+
+Final upstream reconciliation wave (plan: U1D-F0..F6).
+
+**F0 — Adoption boundary (frozen).** Hermes owns SOUL.md, project
+instruction discovery (AGENTS.md / CLAUDE.md / .hermes.md / cursor rules /
+nested hints), prompt construction, prompt-injection scanning, memory,
+skills, `/init`, and host approval primitives. Workspace owns
+workspace/project authority, the Workspace DB, ADRs, tasks, roadmaps,
+journal, search/graph/analytics, Workspace-specific structured context,
+and Workspace-domain audit information. Workspace does NOT own instruction
+discovery, does not implement a custom loader, and must integrate future
+context through the existing Hermes context pipeline rather than mutating
+the system prompt.
+
+**F1 — Approval semantics (fail-closed).** Previously,
+`PolicyDecision.require_approval()` returned `allowed=True` and
+`guard()` returned the decision without enforcement — approval-required
+operations could proceed unapproved. Now `guard()` consults an injectable
+`ApprovalProvider`; only an explicit host grant executes, and
+denial/pending/timeout/no-channel all raise `ApprovalRequired` (fail
+closed). The default `HostApprovalProvider` adopts
+`tools.approval.request_tool_approval()`. `roadmap.delete`,
+`workspace.scope.link`, and `adr.reconcile.write` were re-tiered to
+tier-1 audited (explicit human-initiated desktop actions; see capability
+tiers above). `workspace.delete` remains tier-2 approval-required (not yet
+enforced; must be wired to a real host approval channel before any
+enforcement).
+
+**F2 — Audit identity.** Audit events now record, separately and only when
+genuinely available: `profile_home`, `session_key` (host approval
+namespace — NEVER an actor), durable `session_id`, `correlation_id`, plus
+`turn_id`/`tool_call_id` slots (empty until the host exposes public
+getters). `actor` is only ever populated by the transport. No secrets,
+prompt contents, or file contents are logged. See
+`plugins/workspace/backend/identity.py`.
+
+**F3 — Protected instruction-file write boundary.** Workspace's direct
+filesystem writers are for canonical ADR files under `docs/adr/` only —
+NOT instruction-file writes — and remain governed by the U1D-E path
+contract (a stored canonical path naming `AGENTS.md`, `SOUL.md`,
+`CLAUDE.md`, or `.cursorrules` is rejected as `ADR_UNSAFE_PATH`). If
+Workspace ever writes host-protected instruction files, it MUST route
+through the upstream protected-write contract (`write_file`/`patch`); the
+host's `_check_protected_instruction_write()` is NOT duplicated here.
+
+**F4 — `/init` decision.** Upstream `build_init_prompt_for_cwd(cwd=None)`
+defaults to the process CWD; CLI/gateway/TUI callers at current
+origin/main pass no explicit CWD. Workspace requires NO Core change for
+this milestone and does NOT build `workspace_init` (upstream `/init`
+remains the bootstrap). A separate-approval Core follow-up (propagate the
+resolved session/runtime CWD into `build_init_prompt_for_cwd()` callers
+and scan/bound embedded existing AGENTS content) is documented, not
+implemented.
+
+**F5 — Context-scanner gap review.** Documented upstream follow-ups, not
+implemented here: the scanner examines the first 65,536 characters while
+truncation retains head+tail; `/init` embeds existing AGENTS.md content
+without the normal scanner/size path; nested-hint discovery is
+`TERMINAL_CWD`-anchored rather than session-CWD-anchored; symlinked
+instruction-file targets are validated on write but read-time handling is
+left to upstream. Workspace implements NO scanner of its own.
 
 ### S7.U1D-E — ADR Filesystem Reconciliation Hardening
 

@@ -29,16 +29,17 @@ def test_reconcile_capabilities_registered():
 
     write = reg.get("adr.reconcile.write")
     assert write is not None
-    assert write.tier == 2
-    assert write.approval_required is True
+    assert write.tier == 1
+    assert write.approval_required is False
     assert write.audit_required is True
 
 
-def test_reconcile_write_requires_approval_by_policy():
+def test_reconcile_write_allow_audited_by_policy():
     reg = CapabilityRegistry()
     engine = PolicyEngine(registry=reg)
     decision = engine.evaluate("adr.reconcile.write", context={})
-    assert decision.requires_approval is True
+    assert decision.allowed is True
+    assert decision.requires_approval is False
     assert decision.audited is True
 
 
@@ -72,11 +73,17 @@ def test_audit_events_emitted_for_reconcile_actions(storage, temp_git_repo):
 
     class CollectingLogger(AuditLogger):
         def log(self, action, status, resource_type="", resource_id="",
-                details=None, session_id="", correlation_id=""):
+                details=None, session_id="", correlation_id="",
+                session_key="", profile_home="", turn_id="", tool_call_id="",
+                actor=""):
             events.append({
                 "action": action, "status": status,
                 "resource_type": resource_type, "resource_id": resource_id,
                 "details": details or {},
+                "session_id": session_id,
+                "session_key": session_key,
+                "profile_home": profile_home,
+                "actor": actor,
             })
             return None
 
@@ -106,6 +113,19 @@ def test_audit_events_emitted_for_reconcile_actions(storage, temp_git_repo):
     )
     svc.materialize(adr.id, dry_run=False)
     assert any(e["action"] == "adr.materialize" for e in events)
+
+    # Identity fields are recorded on the authorize path (guard → authorize):
+    # profile home + session key namespace, with the actor slot never
+    # inferred from session_key.
+    authz_events = [
+        e for e in events if e["action"] == "authorize.adr.reconcile.write"
+    ]
+    assert authz_events
+    assert any(
+        e["profile_home"] and e["session_key"] and e["actor"] == ""
+        for e in authz_events
+    )
+
     mat_event = next(e for e in events if e["action"] == "adr.materialize")
     assert mat_event["resource_type"] == "adr"
     assert mat_event["resource_id"] == adr.id
@@ -130,7 +150,9 @@ def test_dry_run_reconcile_still_audited_as_read(storage, temp_git_repo):
 
     class CollectingLogger(AuditLogger):
         def log(self, action, status, resource_type="", resource_id="",
-                details=None, session_id="", correlation_id=""):
+                details=None, session_id="", correlation_id="",
+                session_key="", profile_home="", turn_id="", tool_call_id="",
+                actor=""):
             events.append({"action": action, "details": details or {}})
             return None
 

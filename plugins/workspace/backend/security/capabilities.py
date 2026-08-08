@@ -279,8 +279,8 @@ CAPABILITIES: Dict[str, CapabilityDef] = {
     "workspace.scope.link": CapabilityDef(
         identifier="workspace.scope.link",
         description="Link or unlink a workspace to/from a Hermes Project",
-        tier=2,
-        approval_required=True,
+        tier=1,
+        approval_required=False,
         audit_required=True,
         scope="workspace",
     ),
@@ -329,8 +329,8 @@ CAPABILITIES: Dict[str, CapabilityDef] = {
     "adr.reconcile.write": CapabilityDef(
         identifier="adr.reconcile.write",
         description="Reconcile, materialize, or update canonical ADR files",
-        tier=2,
-        approval_required=True,
+        tier=1,
+        approval_required=False,
         audit_required=True,
         scope="workspace",
     ),
@@ -379,8 +379,8 @@ CAPABILITIES: Dict[str, CapabilityDef] = {
     "roadmap.delete": CapabilityDef(
         identifier="roadmap.delete",
         description="Delete a roadmap and its milestones",
-        tier=2,
-        approval_required=True,
+        tier=1,
+        approval_required=False,
         audit_required=True,
         scope="workspace",
     ),

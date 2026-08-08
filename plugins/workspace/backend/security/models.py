@@ -63,3 +63,10 @@ class AuditEvent:
     details: Dict[str, Any] = field(default_factory=dict)
     session_id: str = ""
     correlation_id: str = ""
+    # U1D-F2 — identity/correlation fields.  ``session_key`` is the host
+    # approval namespace, never a human identity; ``actor`` is only ever
+    # populated by the transport (never inferred from session_key).
+    session_key: str = ""
+    profile_home: str = ""
+    turn_id: str = ""
+    tool_call_id: str = ""

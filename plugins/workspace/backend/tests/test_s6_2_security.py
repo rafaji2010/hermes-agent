@@ -247,14 +247,108 @@ class TestAuthorizationMiddleware:
         assert exc.value.capability == "workspace.create"
         assert "Blocked" in str(exc.value)
 
-    def test_guard_approval_required_does_not_raise_by_default(self, authz):
-        decision = authz.guard("fs.write")
-        assert decision.requires_approval is True
+    def test_guard_approval_required_fails_closed_without_grant(self, authz):
+        """U1D-F: approval-required operations MUST NOT execute without a
+        grant.  When no approval channel yields a grant, guard() raises
+        ApprovalRequired instead of returning an executable decision."""
+        from plugins.workspace.backend.security.approval import (
+            ApprovalOutcome,
+        )
+
+        class NoChannelProvider:
+            def request(self, capability, *, resource_type="", resource_id="",
+                        details=None, session_id="", approval_callback=None):
+                return ApprovalOutcome.unavailable("no human channel")
+
+        authz.approval_provider = NoChannelProvider()
+        with pytest.raises(ApprovalRequired) as exc:
+            authz.guard("fs.write")
+        assert exc.value.capability == "fs.write"
 
     def test_guard_approval_required_raises_when_configured(self, authz):
         with pytest.raises(ApprovalRequired) as exc:
             authz.guard("fs.write", raise_on_approval=True)
         assert exc.value.capability == "fs.write"
+
+    def test_guard_approval_granted_executes(self, authz, audit_logger):
+        """U1D-F: an explicit approval grant lets exactly one operation
+        proceed."""
+        from plugins.workspace.backend.security.approval import (
+            ApprovalOutcome,
+        )
+
+        calls = {"n": 0}
+
+        class GrantingProvider:
+            def request(self, capability, *, resource_type="", resource_id="",
+                        details=None, session_id="", approval_callback=None):
+                calls["n"] += 1
+                return ApprovalOutcome.granted()
+
+        authz.approval_provider = GrantingProvider()
+        decision = authz.guard("fs.write")
+        assert decision.requires_approval is True
+        assert calls["n"] == 1
+        statuses = [e["status"] for e in audit_logger.read(20)]
+        assert "ALLOW:approved" in statuses
+
+    def test_guard_approval_denied_blocks_execution(self, authz, audit_logger):
+        """U1D-F: a denial prevents execution."""
+        from plugins.workspace.backend.security.approval import (
+            ApprovalOutcome,
+        )
+
+        class DenyingProvider:
+            def request(self, capability, *, resource_type="", resource_id="",
+                        details=None, session_id="", approval_callback=None):
+                return ApprovalOutcome.denied("user said no")
+
+        authz.approval_provider = DenyingProvider()
+        with pytest.raises(ApprovalRequired):
+            authz.guard("fs.write")
+        statuses = [e["status"] for e in audit_logger.read(20)]
+        assert "DENY:approval_denied" in statuses
+
+    def test_guard_approval_pending_blocks_execution(self, authz):
+        """U1D-F: a gateway-queued (pending) approval is NOT a grant."""
+        from plugins.workspace.backend.security.approval import (
+            ApprovalOutcome,
+        )
+
+        class PendingProvider:
+            def request(self, capability, *, resource_type="", resource_id="",
+                        details=None, session_id="", approval_callback=None):
+                return ApprovalOutcome.pending("queued for /approve")
+
+        authz.approval_provider = PendingProvider()
+        with pytest.raises(ApprovalRequired):
+            authz.guard("fs.write")
+
+    def test_guard_approval_unavailable_fails_closed(self, authz):
+        """U1D-F: no human approval channel → fail closed."""
+        from plugins.workspace.backend.security.approval import (
+            ApprovalOutcome,
+        )
+
+        class UnavailableProvider:
+            def request(self, capability, *, resource_type="", resource_id="",
+                        details=None, session_id="", approval_callback=None):
+                return ApprovalOutcome.unavailable("no channel")
+
+        authz.approval_provider = UnavailableProvider()
+        with pytest.raises(ApprovalRequired):
+            authz.guard("fs.write")
+
+    def test_guard_approval_provider_raising_fails_closed(self, authz):
+        """U1D-F: a provider failure is a denial, never an allow."""
+        class BrokenProvider:
+            def request(self, capability, *, resource_type="", resource_id="",
+                        details=None, session_id="", approval_callback=None):
+                raise RuntimeError("approval machinery broken")
+
+        authz.approval_provider = BrokenProvider()
+        with pytest.raises(ApprovalRequired):
+            authz.guard("fs.write")
 
     def test_unknown_capability_emits_audit_then_raises(self, authz, audit_logger):
         with pytest.raises(CapabilityNotFound):
@@ -288,12 +382,15 @@ class TestCapabilityEnforcement:
         assert cap.approval_required is True
         assert cap.tier == 2
 
-    def test_roadmap_delete_requires_approval(self):
+    def test_roadmap_delete_audited_routine(self):
+        """U1D-F: roadmap.delete is routine desktop CRUD behind an explicit
+        user action — tier 1, audited, no approval gate."""
         registry = CapabilityRegistry()
         cap = registry.get("roadmap.delete")
         assert cap is not None
-        assert cap.approval_required is True
-        assert cap.tier == 2
+        assert cap.approval_required is False
+        assert cap.tier == 1
+        assert cap.audit_required is True
 
     def test_all_domain_caps_are_audited(self):
         registry = CapabilityRegistry()
