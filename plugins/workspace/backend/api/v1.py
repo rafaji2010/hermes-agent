@@ -454,7 +454,9 @@ def _api_error(exc: Exception) -> HTTPException:
             "SCOPE_UNRESOLVED",
             "SCOPE_AMBIGUOUS",
         ):
-            status = 404 if code != "SCOPE_UNRESOLVED" and code != "SCOPE_AMBIGUOUS" else 403
+            status = 404 if code not in ("SCOPE_UNRESOLVED", "SCOPE_AMBIGUOUS") else 403
+        if code == "SOURCE_STALE":
+            status = 409
         if code in (
             "DUPLICATE_SLUG",
             "ADR_CANONICAL_UPDATE",
