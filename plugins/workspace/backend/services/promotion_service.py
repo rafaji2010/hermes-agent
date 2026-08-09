@@ -32,6 +32,7 @@ from ..models import (
     Workspace,
 )
 from ..promotion_contract import (
+    canonicalize_claim,
     evaluate_eligibility,
     is_promotable_status,
     revalidate_for_execution,
@@ -516,6 +517,238 @@ class PromotionService:
             session_id=session_id,
             correlation_id=correlation_id,
         )
+
+    # ------------------------------------------------------------------
+    # Reconciliation (S7.5.4b)
+    # ------------------------------------------------------------------
+
+    def reconcile_promotion(
+        self,
+        promotion_id: str,
+        *,
+        workspace_id: str,
+        user_confirmed: bool,
+        claim_text: str,
+        session_id: str = "",
+        correlation_id: str = "",
+    ) -> PromotionRecord:
+        """Reconcile an already-approved memory promotion (outcome detection
+        ONLY — never grants authorization).
+
+        ``execute_promotion`` already performed authorization, eligibility,
+        source validation, claim validation, and write initiation.  This
+        method determines only whether that previously authorized operation
+        COMPLETED, by inspecting the Hermes staged pending file and the exact
+        ``MEMORY.md``/``USER.md`` entry.
+
+        Never calls ``evaluate_eligibility`` / ``revalidate_for_execution`` —
+        those are PRE-WRITE gates.  A source becoming stale AFTER a successful
+        write does NOT revoke the completed promotion.
+        """
+        record = self._storage.get_promotion_record(promotion_id)
+        if record is None:
+            raise PromotionRecordNotFoundError(promotion_id)
+
+        # --- authority guards (identity checks only, not authorization) ----
+        if workspace_id and record.workspace_id != workspace_id:
+            raise PromotionRecordNotFoundError(promotion_id)
+        if self._effective_profile_label() != record.profile_label:
+            raise PromotionRecordNotFoundError(promotion_id)
+        self._require_workspace(record.workspace_id)
+
+        # --- claim hash: caller cannot change the promoted claim ------------
+        if self._claim_hash(claim_text) != record.claim_hash:
+            raise PromotionRecordError(
+                "claim_text does not match the record's claim_hash",
+                code="PROMOTION_CLAIM_MISMATCH",
+            )
+
+        # --- status behavior ------------------------------------------------
+        if record.status == "promoted":
+            self._audit_lifecycle(
+                "promotion.reconciled_idempotent",
+                record,
+                session_id=session_id,
+                correlation_id=correlation_id,
+            )
+            return record
+        if record.status != "approved":
+            raise PromotionRecordError(
+                f"Cannot reconcile promotion in state '{record.status}'",
+                code="PROMOTION_ILLEGAL_TRANSITION",
+            )
+
+        # --- resolve the staged pending file (Hermes-owned) -----------------
+        pending_id = self._resolve_pending_id(record, claim_text)
+
+        if pending_id is not None:
+            pending = self._read_pending_file(pending_id)
+            if pending is not None:
+                # The write is still staged and not yet decided.
+                self._audit_lifecycle(
+                    "promotion.reconciled_pending_still",
+                    record,
+                    session_id=session_id,
+                    correlation_id=correlation_id,
+                    extra_details={"pending_id": pending_id},
+                )
+                return self.get(record.promotion_id, workspace_id=workspace_id)
+
+        # pending_id resolved but file absent/malformed, OR no pending found.
+        # Determine completion by EXACT memory-entry membership.
+        if self._exact_memory_entry_present(record, claim_text):
+            return self._promote_if_possible(
+                record,
+                workspace_id=workspace_id,
+                session_id=session_id,
+                correlation_id=correlation_id,
+            )
+
+        # No pending file, no exact memory entry, and Hermes exposes no
+        # definitive failure record -> conservative UNKNOWN (never failed).
+        self._mark_unknown_outcome(
+            record,
+            session_id=session_id,
+            correlation_id=correlation_id,
+        )
+        return self.get(record.promotion_id, workspace_id=workspace_id)
+
+    # ------------------------------------------------------------------
+    # Reconciliation helpers (S7.5.4b)
+    # ------------------------------------------------------------------
+
+    def _promote_if_possible(
+        self,
+        record: PromotionRecord,
+        *,
+        workspace_id: str,
+        session_id: str = "",
+        correlation_id: str = "",
+    ) -> PromotionRecord:
+        """Transition approved -> promoted, retry-safe under concurrency.
+
+        If another reconciler already promoted the record, re-read and return
+        it idempotently instead of surfacing an illegal-transition error.
+        """
+        try:
+            return self.transition(
+                record.promotion_id,
+                "promoted",
+                workspace_id=workspace_id,
+                session_id=session_id,
+                correlation_id=correlation_id,
+            )
+        except PromotionRecordError as exc:
+            if getattr(exc, "code", "") == "PROMOTION_ILLEGAL_TRANSITION":
+                # Re-read: the record may have advanced to promoted by a
+                # concurrent reconciler (retry-safe).
+                fresh = self.get(record.promotion_id, workspace_id=workspace_id)
+                if fresh.status == "promoted":
+                    self._audit_lifecycle(
+                        "promotion.reconciled_idempotent",
+                        fresh,
+                        session_id=session_id,
+                        correlation_id=correlation_id,
+                    )
+                    return fresh
+                if fresh.status == "approved":
+                    # Still approved -> outcome unknown, not failed.
+                    self._mark_unknown_outcome(
+                        fresh,
+                        session_id=session_id,
+                        correlation_id=correlation_id,
+                    )
+                    return fresh
+            raise
+
+    def _resolve_pending_id(self, record: PromotionRecord, claim_text: str) -> Optional[str]:
+        """Resolve the authoritative Hermes pending_id.
+
+        Primary: the recorded audit ``details.pending_id`` is authoritative —
+        but the ledger does not persist it as a column, so we recover it from
+        the workspace audit log for this promotion.  Fallback: scan
+        ``list_pending("memory")`` matching target + canonical claim — exactly
+        one match acceptable; zero/multiple -> unresolved (None).
+        """
+        # 1. Audit-details primary association.
+        recorded = self._pending_id_from_audit(record)
+        if recorded:
+            return recorded
+
+        # 2. Fallback scan (target + canonical claim).
+        try:
+            from tools.write_approval import list_pending  # type: ignore[import-untyped]
+
+            pending = list_pending("memory")
+        except Exception:
+            return None
+
+        canonical = canonicalize_claim(claim_text)
+        matches = [
+            p for p in pending
+            if self._pending_matches(p, record, canonical)
+        ]
+        if len(matches) == 1:
+            return str(matches[0].get("id") or "")
+        # zero or multiple -> unresolved/ambiguous; never arbitrary selection.
+        return None
+
+    def _pending_id_from_audit(self, record: PromotionRecord) -> str:
+        """Recover the authoritative pending_id from the promotion's audit
+        trail (the ``details.pending_id`` written by S7.5.4a)."""
+        if self._audit is None:
+            return ""
+        try:
+            events = self._audit.read(200)
+        except Exception:
+            return ""
+        for event in events:
+            if event.get("resource_id") != record.promotion_id:
+                continue
+            details = event.get("details") or {}
+            pid = str(details.get("pending_id") or "")
+            if pid:
+                return pid
+        return ""
+
+    def _pending_matches(self, pending: dict, record: PromotionRecord, canonical: str) -> bool:
+        """A pending record matches when target and canonical claim agree."""
+        try:
+            payload = pending.get("payload") or {}
+            if str(payload.get("target") or "memory") != record.target_kind:
+                return False
+            content = str(payload.get("content") or "")
+            return canonicalize_claim(content) == canonical
+        except Exception:
+            return False
+
+    def _read_pending_file(self, pending_id: str) -> Optional[dict]:
+        """Read a Hermes pending memory record; None when missing/malformed."""
+        try:
+            from tools.write_approval import get_pending  # type: ignore[import-untyped]
+
+            return get_pending("memory", pending_id)
+        except Exception:
+            return None
+
+    def _exact_memory_entry_present(self, record: PromotionRecord, claim_text: str) -> bool:
+        """True when the EXACT canonical claim is a member of the target memory
+        file, using Hermes' own entry parsing (``\n§\n`` delimiter + strip).
+
+        Never substring matching.  Profile-scoped via ``get_hermes_home()``.
+        """
+        try:
+            from tools.memory_tool import (  # type: ignore[import-untyped]
+                load_on_disk_store,
+            )
+
+            store = load_on_disk_store()
+            entries = store._entries_for(record.target_kind)
+        except Exception:
+            _log.exception("exact memory-entry check failed — conservative unknown")
+            return False
+        canonical = canonicalize_claim(claim_text)
+        return any(canonicalize_claim(e) == canonical for e in entries)
 
     # ------------------------------------------------------------------
     # Execution helpers (S7.5.4a)

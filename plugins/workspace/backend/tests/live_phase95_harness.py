@@ -400,6 +400,114 @@ def main() -> int:
             reset_hermes_home_override(tok_p)
             reset_workspace_runtimes()
 
+        # --- 13. S7.5.4b RECONCILIATION (staged -> approve -> reconcile) -----
+        # Profile A: staged write via write_approval=true, then the Hermes
+        # pending mechanism applies it, then reconcile promotes.
+        home_rec = _make_home(root, "profile-reconcile")
+        (home_rec / "config.yaml").write_text(
+            "memory:\n  write_approval: true\n"
+        )
+        tok_rec = set_hermes_home_override(str(home_rec))
+        try:
+            from tools.write_approval import list_pending, discard_pending
+            from tools.memory_tool import apply_memory_pending, load_on_disk_store
+
+            rt_r = get_workspace_runtime()
+            ws_r = rt_r.workspace_service.create_workspace(
+                __import__("plugins.workspace.backend.models", fromlist=["WorkspaceCreate"]).WorkspaceCreate(name="ws-rec", path="")
+            )
+            adr_r = rt_r.adr_service.create_adr(ADRCreate(
+                workspace_id=ws_r.id, title="Reconcile ADR", status="accepted",
+                category="", markdown="# Reconcile\n", tags=[],
+            ))
+            conn_r = rt_r.database.get_connection()
+            conn_r.execute(
+                "UPDATE adrs SET content_hash = ?, reconcile_state = 'synced', "
+                "source = 'git_file' WHERE id = ?",
+                ("f" * 64, adr_r.id),
+            )
+            conn_r.commit()
+            svc_r = PromotionService(storage=rt_r.storage, audit=rt_r.audit)
+            prov_r = _promotion_provenance(
+                ws_r.id, adr_r.id, "f" * 64, "profile-reconcile", project_id="proj-a"
+            )
+            scope_r = ScopeSnapshot(
+                profile_label="profile-reconcile", workspace_id=ws_r.id,
+                workspace_name="ws-rec", project_id="proj-a",
+                project_slug="proj-a", scope_state="mapped", match_source="ledger",
+            )
+            cand_r = make_candidate(
+                claim_text="Reconcile claim: exact entry.",
+                assertion_type=AssertionType.CANONICAL_FACT,
+                target_kind=TargetKind.MEMORY, provenance=prov_r, scope=scope_r,
+                user_confirmed=True,
+            )
+            rec_r = svc_r.propose(cand_r)
+            exec_r = svc_r.execute_promotion(
+                rec_r.promotion_id, "Reconcile claim: exact entry.",
+                workspace_id=ws_r.id, user_confirmed=True,
+            )
+            check("13.1 staged execution stays approved",
+                  exec_r.status == "approved", exec_r.status)
+            pending_r = list_pending("memory")
+            check("13.2 Hermes pending file exists", len(pending_r) >= 1)
+            mem_rec = (home_rec / "memories" / "MEMORY.md")
+            mem_rec_text = mem_rec.read_text(encoding="utf-8") if mem_rec.exists() else ""
+            check("13.3 claim not in MEMORY.md while staged",
+                  "Reconcile claim: exact entry." not in mem_rec_text)
+
+            # Simulate the Hermes approve path: apply_memory_pending applies
+            # the write AND discard_pending removes the staged file (the real
+            # /memory approve handler does both).  Then reconcile.
+            pending_id = str(pending_r[0]["id"])
+            applied = apply_memory_pending(pending_r[0]["payload"], load_on_disk_store())
+            check("13.4 Hermes apply_memory_pending succeeds",
+                  isinstance(applied, dict) and applied.get("success") is True,
+                  str(applied)[:120])
+            discard_pending("memory", pending_id)
+            check("13.4b Hermes pending file discarded after approve",
+                  not (home_rec / "pending" / "memory" / f"{pending_id}.json").exists())
+
+            reconciled = svc_r.reconcile_promotion(
+                rec_r.promotion_id, workspace_id=ws_r.id, user_confirmed=True,
+                claim_text="Reconcile claim: exact entry.",
+            )
+            mem_rec_text2 = mem_rec.read_text(encoding="utf-8") if mem_rec.exists() else ""
+            check("13.5 reconcile promotes after approval", reconciled.status == "promoted",
+                  reconciled.status)
+            check("13.6 exact MEMORY entry present",
+                  "Reconcile claim: exact entry." in mem_rec_text2)
+
+            # Repeated reconciliation is idempotent.
+            again = svc_r.reconcile_promotion(
+                rec_r.promotion_id, workspace_id=ws_r.id, user_confirmed=True,
+                claim_text="Reconcile claim: exact entry.",
+            )
+            check("13.7 repeated reconcile idempotent", again.status == "promoted",
+                  again.status)
+
+            # Cross-profile: reconciling from a different effective home must
+            # fail closed (PromotionRecordNotFound — profile mismatch).
+            tok_a = set_hermes_home_override(str(home_a))
+            cross_ok = False
+            try:
+                try:
+                    svc_r.reconcile_promotion(
+                        rec_r.promotion_id, workspace_id=ws_r.id,
+                        user_confirmed=True,
+                        claim_text="Reconcile claim: exact entry.",
+                    )
+                except Exception as exc:
+                    cross_ok = getattr(exc, "code", "") == "PROMOTION_NOT_FOUND"
+            finally:
+                reset_hermes_home_override(tok_a)
+                reset_workspace_runtimes()
+            check("13.8 cross-profile reconcile fails closed", cross_ok,
+                  "expected PROMOTION_NOT_FOUND under a different profile")
+        finally:
+            reset_hermes_home_override(tok_rec)
+            reset_workspace_runtimes()
+
     finally:
         plugins_mod._plugin_manager = saved_mgr
         reset_hermes_home_override(home_a_tok)

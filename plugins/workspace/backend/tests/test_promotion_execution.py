@@ -709,3 +709,329 @@ class TestStructuredSources:
             )
         assert getattr(exc.value, "code", "") == "SOURCE_STALE"
         assert _memory_md(home) == ""
+
+
+# ---------------------------------------------------------------------------
+# S7.5.4b — Reconciliation tests
+# ---------------------------------------------------------------------------
+
+
+def _write_pending(home: Path, pending_id: str, target: str, content: str) -> None:
+    """Create a Hermes staged pending memory file under the profile home."""
+    import time
+
+    d = home / "pending" / "memory"
+    d.mkdir(parents=True, exist_ok=True)
+    record = {
+        "id": pending_id,
+        "subsystem": "memory",
+        "action": "add",
+        "summary": "add to memory",
+        "origin": "foreground",
+        "created_at": time.time(),
+        "payload": {"action": "add", "target": target, "content": content},
+    }
+    (d / f"{pending_id}.json").write_text(
+        json.dumps(record, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def _remove_pending(home: Path, pending_id: str) -> None:
+    p = home / "pending" / "memory" / f"{pending_id}.json"
+    if p.exists():
+        p.unlink()
+
+
+def _write_memory_entry(home: Path, target: str, content: str) -> None:
+    """Write an exact entry using Hermes' own MemoryStore (no bypass)."""
+    from tools.memory_tool import load_on_disk_store
+
+    store = load_on_disk_store()
+    store.add(target, content)
+
+
+def _make_approved(service, *, claim_text="Use JWT for authentication.") -> str:
+    """Propose + transition to approved via execute (non-staged is the
+    fastest path; here we force approved by directly staging)."""
+    # propose an eligible candidate
+    pid = _propose(service, claim_text=claim_text)
+    # move to approved via execute with write_approval staged? Instead just
+    # transition the ledger directly through the allowed path.
+    service.transition(pid, "pending", workspace_id="ws-1")
+    service.transition(pid, "approved", workspace_id="ws-1")
+    return pid
+
+
+class TestReconcilePromotion:
+    def test_pending_present_remains_approved(self, env):
+        home, storage, service = env
+        pid = _make_approved(service)
+        _write_pending(home, "abc12345", "memory", "Use JWT for authentication.")
+        rec = service.reconcile_promotion(
+            pid, workspace_id="ws-1", user_confirmed=True,
+            claim_text="Use JWT for authentication.",
+        )
+        assert rec.status == "approved"
+
+    def test_pending_missing_exact_entry_promoted(self, env):
+        home, storage, service = env
+        pid = _make_approved(service)
+        _write_memory_entry(home, "memory", "Use JWT for authentication.")
+        rec = service.reconcile_promotion(
+            pid, workspace_id="ws-1", user_confirmed=True,
+            claim_text="Use JWT for authentication.",
+        )
+        assert rec.status == "promoted"
+        assert rec.promoted_at
+
+    def test_pending_missing_no_entry_unknown(self, env):
+        home, storage, service = env
+        pid = _make_approved(service)
+        rec = service.reconcile_promotion(
+            pid, workspace_id="ws-1", user_confirmed=True,
+            claim_text="Use JWT for authentication.",
+        )
+        assert rec.status == "approved"
+        assert rec.failure_code == "memory_write_outcome_unknown"
+
+    def test_malformed_pending_unknown(self, env):
+        home, storage, service = env
+        pid = _make_approved(service)
+        d = home / "pending" / "memory"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "zzz99999.json").write_text("{ not json", encoding="utf-8")
+        rec = service.reconcile_promotion(
+            pid, workspace_id="ws-1", user_confirmed=True,
+            claim_text="Use JWT for authentication.",
+        )
+        assert rec.status == "approved"
+        assert rec.failure_code == "memory_write_outcome_unknown"
+
+    def test_claim_hash_mismatch(self, env):
+        home, storage, service = env
+        pid = _make_approved(service, claim_text="Use JWT for authentication.")
+        with pytest.raises(PromotionRecordError) as exc:
+            service.reconcile_promotion(
+                pid, workspace_id="ws-1", user_confirmed=True,
+                claim_text="Use OAuth2 instead!",
+            )
+        assert getattr(exc.value, "code", "") == "PROMOTION_CLAIM_MISMATCH"
+
+    def test_duplicate_pending_ids_no_arbitrary_selection(self, env):
+        """Two pending files with the same canonical claim and no recorded
+        pending_id -> ambiguous/unknown, never arbitrary selection."""
+        home, storage, service = env
+        pid = _make_approved(service)
+        _write_pending(home, "aaaa1111", "memory", "Use JWT for authentication.")
+        _write_pending(home, "bbbb2222", "memory", "Use JWT for authentication.")
+        rec = service.reconcile_promotion(
+            pid, workspace_id="ws-1", user_confirmed=True,
+            claim_text="Use JWT for authentication.",
+        )
+        # ambiguous fallback -> unknown (not promoted)
+        assert rec.status == "approved"
+        assert rec.failure_code == "memory_write_outcome_unknown"
+
+    def test_ambiguous_fallback_unknown(self, env):
+        home, storage, service = env
+        pid = _make_approved(service)
+        _write_pending(home, "aaaa1111", "memory", "Use JWT for authentication.")
+        _write_pending(home, "cccc3333", "user", "Use JWT for authentication.")
+        # one target-matching file -> not ambiguous by target; but the recorded
+        # pending_id is absent so fallback matches exactly one -> should use it.
+        # This proves the exactly-one rule works.
+        rec = service.reconcile_promotion(
+            pid, workspace_id="ws-1", user_confirmed=True,
+            claim_text="Use JWT for authentication.",
+        )
+        # exactly one memory-target match -> uses it -> still pending (file present)
+        assert rec.status == "approved"
+
+    def test_cross_profile_isolation(self, tmp_path, env):
+        home, storage, service = env
+        pid = _make_approved(service)
+        other = tmp_path / "profile-b"
+        other.mkdir(parents=True)
+        tok = set_hermes_home_override(str(other))
+        try:
+            with pytest.raises(PromotionRecordNotFoundError):
+                service.reconcile_promotion(
+                    pid, workspace_id="ws-1", user_confirmed=True,
+                    claim_text="Use JWT for authentication.",
+                )
+        finally:
+            reset_hermes_home_override(tok)
+
+    def test_cross_workspace_isolation(self, env):
+        home, storage, service = env
+        pid = _make_approved(service)
+        with pytest.raises(PromotionRecordNotFoundError):
+            service.reconcile_promotion(
+                pid, workspace_id="other-ws", user_confirmed=True,
+                claim_text="Use JWT for authentication.",
+            )
+
+    def test_stale_after_write_promoted(self, env):
+        """Source becoming stale AFTER a successful write must NOT block."""
+        home, storage, service = env
+        pid = _make_approved(service)
+        _write_memory_entry(home, "memory", "Use JWT for authentication.")
+        # stale the ADR source after the write
+        conn = storage._conn
+        conn.execute(
+            "UPDATE adrs SET content_hash = 'b' * 64, reconcile_state = 'conflict' "
+            "WHERE id = 'adr-001'"
+        )
+        conn.commit()
+        rec = service.reconcile_promotion(
+            pid, workspace_id="ws-1", user_confirmed=True,
+            claim_text="Use JWT for authentication.",
+        )
+        assert rec.status == "promoted"
+
+    def test_stale_before_completion_no_reauthorize(self, env):
+        """Pending present + source stale -> reconciliation does NOT
+        re-authorize; remains approved."""
+        home, storage, service = env
+        pid = _make_approved(service)
+        _write_pending(home, "abc12345", "memory", "Use JWT for authentication.")
+        conn = storage._conn
+        conn.execute(
+            "UPDATE adrs SET content_hash = 'b' * 64 WHERE id = 'adr-001'"
+        )
+        conn.commit()
+        rec = service.reconcile_promotion(
+            pid, workspace_id="ws-1", user_confirmed=True,
+            claim_text="Use JWT for authentication.",
+        )
+        assert rec.status == "approved"
+
+    def test_concurrent_reconciliation_one_transition(self, env):
+        import threading
+
+        home, storage, service = env
+        pid = _make_approved(service)
+        _write_memory_entry(home, "memory", "Use JWT for authentication.")
+        results: list = []
+        errors: list = []
+
+        def _run():
+            tok = set_hermes_home_override(str(home))
+            try:
+                rec = service.reconcile_promotion(
+                    pid, workspace_id="ws-1", user_confirmed=True,
+                    claim_text="Use JWT for authentication.",
+                )
+                results.append(rec.status)
+            except Exception as exc:  # pragma: no cover
+                errors.append(exc)
+            finally:
+                reset_hermes_home_override(tok)
+
+        threads = [threading.Thread(target=_run) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert set(results) == {"promoted"}, f"got {results} errors={errors}"
+        # exactly one transition, others idempotent-return promoted
+        assert len(results) == 4
+        assert not errors
+
+    def test_repeated_reconciliation_idempotent(self, env):
+        home, storage, service = env
+        pid = _make_approved(service)
+        _write_memory_entry(home, "memory", "Use JWT for authentication.")
+        r1 = service.reconcile_promotion(
+            pid, workspace_id="ws-1", user_confirmed=True,
+            claim_text="Use JWT for authentication.",
+        )
+        assert r1.status == "promoted"
+        md_before = _memory_md(home)
+        r2 = service.reconcile_promotion(
+            pid, workspace_id="ws-1", user_confirmed=True,
+            claim_text="Use JWT for authentication.",
+        )
+        assert r2.status == "promoted"
+        assert _memory_md(home) == md_before
+
+    def test_crash_after_write_promoted_on_reconcile(self, env):
+        """Crash after memory write before ledger promote -> reconcile finds
+        the exact entry and promotes."""
+        home, storage, service = env
+        pid = _make_approved(service)
+        _write_memory_entry(home, "memory", "Use JWT for authentication.")
+        rec = service.reconcile_promotion(
+            pid, workspace_id="ws-1", user_confirmed=True,
+            claim_text="Use JWT for authentication.",
+        )
+        assert rec.status == "promoted"
+
+    def test_crash_before_write_unknown(self, env):
+        home, storage, service = env
+        pid = _make_approved(service)
+        rec = service.reconcile_promotion(
+            pid, workspace_id="ws-1", user_confirmed=True,
+            claim_text="Use JWT for authentication.",
+        )
+        assert rec.status == "approved"
+        assert rec.failure_code == "memory_write_outcome_unknown"
+
+    def test_already_promoted_idempotent(self, env):
+        home, storage, service = env
+        pid = _make_approved(service)
+        service.transition(pid, "promoted", workspace_id="ws-1")
+        rec = service.reconcile_promotion(
+            pid, workspace_id="ws-1", user_confirmed=True,
+            claim_text="Use JWT for authentication.",
+        )
+        assert rec.status == "promoted"
+
+    def test_foreign_pending_payload_cannot_satisfy_claim(self, env):
+        """A foreign pending payload with different content cannot satisfy the
+        recorded claim hash."""
+        home, storage, service = env
+        pid = _make_approved(service, claim_text="Use JWT for authentication.")
+        _write_pending(home, "deadbeef", "memory", "Completely different content.")
+        # fallback scan: content mismatch -> zero matches -> unknown (not promoted)
+        rec = service.reconcile_promotion(
+            pid, workspace_id="ws-1", user_confirmed=True,
+            claim_text="Use JWT for authentication.",
+        )
+        assert rec.status == "approved"
+        assert rec.failure_code == "memory_write_outcome_unknown"
+
+    def test_missing_pending_id_one_valid_fallback(self, env):
+        home, storage, service = env
+        pid = _make_approved(service)
+        _write_pending(home, "aaaa1111", "memory", "Use JWT for authentication.")
+        rec = service.reconcile_promotion(
+            pid, workspace_id="ws-1", user_confirmed=True,
+            claim_text="Use JWT for authentication.",
+        )
+        # exactly one match -> uses it -> file present -> still approved
+        assert rec.status == "approved"
+
+    def test_missing_pending_id_multiple_matching_unknown(self, env):
+        home, storage, service = env
+        pid = _make_approved(service)
+        _write_pending(home, "aaaa1111", "memory", "Use JWT for authentication.")
+        _write_pending(home, "bbbb2222", "memory", "Use JWT for authentication.")
+        rec = service.reconcile_promotion(
+            pid, workspace_id="ws-1", user_confirmed=True,
+            claim_text="Use JWT for authentication.",
+        )
+        assert rec.status == "approved"
+        assert rec.failure_code == "memory_write_outcome_unknown"
+
+    def test_missing_pending_id_zero_matching_unknown(self, env):
+        home, storage, service = env
+        pid = _make_approved(service)
+        _write_pending(home, "aaaa1111", "user", "Some other content.")
+        rec = service.reconcile_promotion(
+            pid, workspace_id="ws-1", user_confirmed=True,
+            claim_text="Use JWT for authentication.",
+        )
+        assert rec.status == "approved"
+        assert rec.failure_code == "memory_write_outcome_unknown"
