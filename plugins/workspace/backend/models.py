@@ -1322,3 +1322,53 @@ class PromotionRecordExistsError(PromotionRecordError):
             f"Promotion record already exists for candidate identity: {candidate_identity}",
             code="PROMOTION_DUPLICATE",
         )
+
+
+# ---------------------------------------------------------------------------
+# S7.5.5 — Promotion REST DTOs (claim_text is ephemeral, never persisted)
+# ---------------------------------------------------------------------------
+
+
+class PromotionProposeRequest(BaseModel):
+    """Payload for ``POST /v1/promotions/propose``.
+
+    ``claim_text`` is ephemeral — the ledger stores only ``claim_hash``
+    and ``candidate_identity``.  Scope is resolved via ``workspace_id`` or
+    ``session_id``/``cwd`` (same ``_require_scope`` convention as ADRs).
+    """
+
+    workspace_id: str = Field(default="", description="Target workspace.")
+    session_id: str = Field(default="", description="Optional session for scope resolution.")
+    cwd: str = Field(default="", description="Optional CWD for scope resolution.")
+    claim_text: str = Field(..., min_length=1, description="Claim to promote (ephemeral).")
+    assertion_type: str = Field(default="canonical_fact", description="canonical_fact | user_confirmed_summary | user_authored_fact | model_inference")
+    target_kind: str = Field(default="memory", description="memory | user")
+    source_type: str = Field(..., description="adr | journal | task | roadmap | session_evidence")
+    source_id: str = Field(..., min_length=1)
+    source_canonical_id: str = Field(default="")
+    source_relative_path: str = Field(default="")
+    source_hash: str = Field(..., min_length=1)
+    source_hash_kind: str = Field(..., description="sha256_bytes | structured_snapshot")
+    source_state: str = Field(default="")
+    project_id: str = Field(default="")
+    user_confirmed: bool = Field(default=False)
+
+
+class PromotionExecuteRequest(BaseModel):
+    """Payload for ``POST /v1/promotions/{id}/execute``."""
+
+    claim_text: str = Field(..., min_length=1, description="Must hash to the ledger claim_hash.")
+    user_confirmed: bool = Field(default=False)
+
+
+class PromotionReconcileRequest(BaseModel):
+    """Payload for ``POST /v1/promotions/{id}/reconcile``."""
+
+    claim_text: str = Field(..., min_length=1)
+    user_confirmed: bool = Field(default=False)
+
+
+class PromotionList(BaseModel):
+    """Envelope for promotion list endpoints."""
+
+    promotions: List[PromotionRecord]

@@ -67,6 +67,10 @@ from ..models import (
     ADRReconcileStatusList,
     ADRReconcileSummary,
     ADRUpdate,
+    PromotionExecuteRequest,
+    PromotionList,
+    PromotionProposeRequest,
+    PromotionReconcileRequest,
     AnalyticsResponse,
     AssistantContext,
     ChatRequest,
@@ -192,6 +196,11 @@ def _adr_service() -> ADRService:
 def _adr_reconcile_service() -> ADRReconcileService:
     """Return the runtime's ``ADRReconcileService``."""
     return _runtime().adr_reconcile_service
+
+
+def _promotion_service():
+    """Return the runtime's ``PromotionService``."""
+    return _runtime().promotion_service
 
 
 def _journal_service() -> JournalService:
@@ -432,8 +441,20 @@ def _api_error(exc: Exception) -> HTTPException:
             "CROSS_PROJECT_REASSIGNMENT",
             "EMPTY_TITLE",
             "INVALID_ADR_STATUS",
+            "PROMOTION_CLAIM_MISMATCH",
+            "PROMOTION_NOT_CONFIRMED",
+            "PROMOTION_INVALID_STATUS",
+            "PROMOTION_ILLEGAL_TRANSITION",
+            "PROMOTION_DUPLICATE",
         ):
             status = 400
+        if code in (
+            "PROMOTION_NOT_FOUND",
+            "WORKSPACE_NOT_FOUND",
+            "SCOPE_UNRESOLVED",
+            "SCOPE_AMBIGUOUS",
+        ):
+            status = 404 if code != "SCOPE_UNRESOLVED" and code != "SCOPE_AMBIGUOUS" else 403
         if code in (
             "DUPLICATE_SLUG",
             "ADR_CANONICAL_UPDATE",
@@ -452,6 +473,12 @@ def _api_error(exc: Exception) -> HTTPException:
             "ADR_MISSING_FILE",
         ):
             status = 400
+        if code in ("SCOPE_UNRESOLVED", "SCOPE_AMBIGUOUS"):
+            status = 403
+        if code == "PROMOTION_CLAIM_MISMATCH":
+            status = 400
+        if code == "PROMOTION_ILLEGAL_TRANSITION":
+            status = 409
         return _error(status, exc)
     if isinstance(exc, AuthorizationDenied):
         return _error_detail(403, "Authorization denied", str(exc), "AUTHORIZATION_DENIED")
@@ -1974,6 +2001,191 @@ def export_analytics(
             f"- Orphans: {data.graph_orphans}",
         ]
         return PlainTextResponse("\n".join(lines), media_type="text/markdown")
+
+
+# ---------------------------------------------------------------------------
+# Memory Promotions (S7.5.5)
+# ---------------------------------------------------------------------------
+#
+# Workspace-scoped, capability-gated lifecycle over the metadata-only
+# promotion ledger.  Ordering per handler (mandatory S7.5.5 constraint):
+#   1) resolve/require workspace scope
+#   2) capability authorization
+#   3) resource/workspace membership
+#   4) delegate to WorkspaceRuntime.promotion_service
+#   5) map errors via _api_error / membership 404 / scope 403
+# Never authorize against an unresolved or ambiguous scope.
+
+
+def _promotion_guard_membership(record, workspace_id: str) -> None:
+    if record.workspace_id != workspace_id:
+        from ..models import WorkspaceNotFoundError
+
+        raise WorkspaceNotFoundError(workspace_id)
+
+
+@router.post("/promotions/propose", response_model=PromotionList, status_code=201)
+def propose_promotion(payload: PromotionProposeRequest):
+    """Propose a promotion candidate (deterministic dedup, metadata only)."""
+    workspace_id = _require_scope(payload.workspace_id, payload.session_id, payload.cwd)
+    _get_authz().guard(
+        "promotion.propose",
+        resource_type="workspace",
+        resource_id=workspace_id,
+        details={"source_type": payload.source_type},
+    )
+    try:
+        from ..promotion_contract import make_candidate
+        from ..promotion_models import (
+            AssertionType,
+            ProvenanceEnvelope,
+            ScopeSnapshot,
+            SourceHashKind,
+            SourceType,
+            TargetKind,
+        )
+
+        ws = _runtime().storage.get_workspace(workspace_id)
+        if ws is None:
+            from ..models import WorkspaceNotFoundError
+
+            raise WorkspaceNotFoundError(workspace_id)
+        project_id = (payload.project_id or "").strip()
+        provenance = ProvenanceEnvelope(
+            source_type=SourceType(payload.source_type),
+            source_id=payload.source_id,
+            source_canonical_id=payload.source_canonical_id,
+            source_relative_path=payload.source_relative_path,
+            source_hash=payload.source_hash,
+            source_hash_kind=SourceHashKind(payload.source_hash_kind),
+            source_state=payload.source_state,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            profile_label=_promotion_service()._effective_profile_label(),
+        )
+        scope = ScopeSnapshot(
+            profile_label=provenance.profile_label,
+            workspace_id=workspace_id,
+            workspace_name=ws.name,
+            project_id=project_id,
+            scope_state="mapped",
+            match_source="api",
+        )
+        candidate = make_candidate(
+            claim_text=payload.claim_text,
+            assertion_type=AssertionType(payload.assertion_type),
+            target_kind=TargetKind(payload.target_kind),
+            provenance=provenance,
+            scope=scope,
+            user_confirmed=bool(payload.user_confirmed),
+        )
+        record = _promotion_service().propose(candidate, scope_state="mapped")
+    except Exception as exc:
+        raise _api_error(exc) from exc
+    return PromotionList(promotions=[record])
+
+
+@router.get("/promotions", response_model=PromotionList)
+def list_promotions(
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+    cwd: str = Query(default=""),
+    limit: int = Query(default=100, ge=1, le=200),
+):
+    """List promotion records for a workspace (never global)."""
+    workspace_id = _require_scope(workspace_id, session_id, cwd)
+    _get_authz().guard(
+        "promotion.read",
+        resource_type="workspace",
+        resource_id=workspace_id,
+    )
+    try:
+        records = _promotion_service().list_for_workspace(workspace_id, limit=limit)
+    except Exception as exc:
+        raise _api_error(exc) from exc
+    return PromotionList(promotions=records)
+
+
+@router.get("/promotions/{promotion_id}", response_model=PromotionList)
+def get_promotion(
+    promotion_id: str,
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+    cwd: str = Query(default=""),
+):
+    """Get a single promotion record (workspace membership enforced)."""
+    workspace_id = _require_scope(workspace_id, session_id, cwd)
+    _get_authz().guard(
+        "promotion.read",
+        resource_type="promotion",
+        resource_id=promotion_id,
+        details={"workspace_id": workspace_id},
+    )
+    try:
+        record = _promotion_service().get(promotion_id, workspace_id=workspace_id)
+    except Exception as exc:
+        raise _api_error(exc) from exc
+    return PromotionList(promotions=[record])
+
+
+@router.post("/promotions/{promotion_id}/execute", response_model=PromotionList)
+def execute_promotion_route(
+    promotion_id: str,
+    payload: PromotionExecuteRequest,
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+    cwd: str = Query(default=""),
+):
+    """Execute a promotion (claim_hash invariant, staged vs promoted)."""
+    workspace_id = _require_scope(workspace_id, session_id, cwd)
+    _get_authz().guard(
+        "promotion.execute",
+        resource_type="promotion",
+        resource_id=promotion_id,
+        details={"workspace_id": workspace_id},
+    )
+    try:
+        existing = _promotion_service().get(promotion_id, workspace_id=workspace_id)
+        _promotion_guard_membership(existing, workspace_id)
+        record = _promotion_service().execute_promotion(
+            promotion_id,
+            payload.claim_text,
+            workspace_id=workspace_id,
+            user_confirmed=bool(payload.user_confirmed),
+        )
+    except Exception as exc:
+        raise _api_error(exc) from exc
+    return PromotionList(promotions=[record])
+
+
+@router.post("/promotions/{promotion_id}/reconcile", response_model=PromotionList)
+def reconcile_promotion_route(
+    promotion_id: str,
+    payload: PromotionReconcileRequest,
+    workspace_id: str = Query(default=""),
+    session_id: str = Query(default=""),
+    cwd: str = Query(default=""),
+):
+    """Reconcile a staged promotion outcome (never re-authorizes)."""
+    workspace_id = _require_scope(workspace_id, session_id, cwd)
+    _get_authz().guard(
+        "promotion.reconcile",
+        resource_type="promotion",
+        resource_id=promotion_id,
+        details={"workspace_id": workspace_id},
+    )
+    try:
+        existing = _promotion_service().get(promotion_id, workspace_id=workspace_id)
+        _promotion_guard_membership(existing, workspace_id)
+        record = _promotion_service().reconcile_promotion(
+            promotion_id,
+            workspace_id=workspace_id,
+            user_confirmed=bool(payload.user_confirmed),
+            claim_text=payload.claim_text,
+        )
+    except Exception as exc:
+        raise _api_error(exc) from exc
+    return PromotionList(promotions=[record])
 
 
 # ---------------------------------------------------------------------------

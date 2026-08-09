@@ -513,6 +513,81 @@ def main() -> int:
         reset_hermes_home_override(home_a_tok)
         reset_workspace_runtimes()
 
+        # --- 14. S7.5.5 PROMOTION REST (live router, profile-scoped) ----
+        from fastapi.testclient import TestClient as _TC
+        from plugins.workspace.backend.api.v1 import router as _v1r
+        from fastapi import FastAPI as _FA
+        _app14 = _FA()
+        _app14.include_router(_v1r)
+        _tc = _TC(_app14)
+        tok_14 = set_hermes_home_override(str(home_a))
+        try:
+            import yaml as _yml
+            _home14 = _make_home(root, "profile-rest")
+            tok_tmp = set_hermes_home_override(str(_home14))
+            try:
+                from plugins.workspace.backend.runtime import get_workspace_runtime as _gwr14
+                _rt14 = _gwr14()
+                _ws14 = _rt14.workspace_service.create_workspace(
+                    __import__("plugins.workspace.backend.models", fromlist=["WorkspaceCreate"]).WorkspaceCreate(name="ws-rest", path="")
+                )
+                _adr14 = _rt14.adr_service.create_adr(ADRCreate(
+                    workspace_id=_ws14.id, title="REST ADR", status="accepted",
+                    category="", markdown="# REST\n", tags=[],
+                ))
+                _conn14 = _rt14.database.get_connection()
+                _conn14.execute("UPDATE adrs SET content_hash=?, reconcile_state='synced', source='git_file' WHERE id=?", ("c" * 64, _adr14.id))
+                _conn14.commit()
+                # Propose via REST, execute via REST, verify MEMORY.md + idempotent reconcile via REST.
+                tok_rest = set_hermes_home_override(str(_home14))
+                try:
+                    _claim14 = "Live REST promotion claim."
+                    r_p = _tc.post("/v1/promotions/propose", json={
+                        "workspace_id": _ws14.id,
+                        "claim_text": _claim14,
+                        "assertion_type": "canonical_fact",
+                        "target_kind": "memory",
+                        "source_type": "adr",
+                        "source_id": _adr14.id,
+                        "source_hash": "c" * 64,
+                        "source_hash_kind": "sha256_bytes",
+                        "source_state": "synced",
+                        "project_id": "proj-rest",
+                        "user_confirmed": True,
+                    })
+                    check("14.1 REST propose 201", r_p.status_code == 201, f"{r_p.status_code} {r_p.text[:120]}")
+                    _pid14 = (r_p.json().get("promotions") or [{}])[0].get("promotion_id", "")
+                    r_e = _tc.post(f"/v1/promotions/{_pid14}/execute", params={"workspace_id": _ws14.id}, json={"claim_text": _claim14, "user_confirmed": True})
+                    check("14.2 REST execute promoted", (r_e.json().get("promotions") or [{}])[0].get("status") == "promoted", r_e.text[:120])
+                    _mem14 = (_home14 / "memories" / "MEMORY.md").read_text(encoding="utf-8") if (_home14 / "memories" / "MEMORY.md").exists() else ""
+                    check("14.3 REST MEMORY.md exact claim", _claim14 in _mem14)
+                    r_g = _tc.get(f"/v1/promotions/{_pid14}", params={"workspace_id": _ws14.id})
+                    check("14.4 REST get membership ok", r_g.status_code == 200)
+                    # Cross-profile 404
+                    _home14b = _make_home(root, "profile-rest-b")
+                    tok_b14 = set_hermes_home_override(str(_home14b))
+                    try:
+                        _rt_b = _gwr14()
+                        _rt_b.database.get_connection()
+                        r_x = _tc.get(f"/v1/promotions/{_pid14}", params={"workspace_id": _ws14.id})
+                        check("14.5 REST cross-profile fails closed", r_x.status_code == 404, f"{r_x.status_code}")
+                    finally:
+                        from plugins.workspace.backend.runtime import reset_workspace_runtimes as _rwr
+                        _rwr()
+                        reset_hermes_home_override(tok_b14)
+                finally:
+                    reset_hermes_home_override(tok_rest)
+            finally:
+                reset_hermes_home_override(tok_tmp)
+                from plugins.workspace.backend.runtime import reset_workspace_runtimes as _rwr2
+                _rwr2()
+        except Exception as exc:
+            check("14 REST harness", False, f"{exc}")
+        finally:
+            reset_hermes_home_override(tok_14)
+            from plugins.workspace.backend.runtime import reset_workspace_runtimes as _rwr3
+            _rwr3()
+
     print("\n===== SUMMARY =====")
     print(f"PASS: {len(PASS)}  FAIL: {len(FAIL)}")
     if FAIL:

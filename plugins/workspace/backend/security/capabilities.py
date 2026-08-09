@@ -434,6 +434,41 @@ CAPABILITIES: Dict[str, CapabilityDef] = {
         audit_required=True,
         scope="workspace",
     ),
+
+    # S7.5.5 — Memory promotion lifecycle (REST surface; service is
+    # scope+profile isolated and fail-closed — REST is presentation only)
+    "promotion.propose": CapabilityDef(
+        identifier="promotion.propose",
+        description="Propose a memory promotion candidate",
+        tier=1,
+        approval_required=False,
+        audit_required=True,
+        scope="workspace",
+    ),
+    "promotion.read": CapabilityDef(
+        identifier="promotion.read",
+        description="List or read promotion lifecycle records",
+        tier=1,
+        approval_required=False,
+        audit_required=True,
+        scope="workspace",
+    ),
+    "promotion.execute": CapabilityDef(
+        identifier="promotion.execute",
+        description="Execute an approved memory promotion via Hermes memory_tool",
+        tier=1,
+        approval_required=False,
+        audit_required=True,
+        scope="workspace",
+    ),
+    "promotion.reconcile": CapabilityDef(
+        identifier="promotion.reconcile",
+        description="Reconcile a staged memory promotion outcome",
+        tier=1,
+        approval_required=False,
+        audit_required=True,
+        scope="workspace",
+    ),
 }
 
 
