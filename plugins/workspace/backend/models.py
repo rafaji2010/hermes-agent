@@ -1259,3 +1259,66 @@ class ScopeAmbiguousError(WorkspaceError):
 
     def __init__(self, message: str):
         super().__init__(message, code="SCOPE_AMBIGUOUS")
+
+
+# ---------------------------------------------------------------------------
+# S7.5.3 — Memory promotion ledger
+# ---------------------------------------------------------------------------
+
+
+class PromotionRecord(BaseModel):
+    """Metadata-only ledger row for a memory promotion candidate (S7.5.3).
+
+    Stores identity references, hashes, and lifecycle state ONLY — never
+    claim text, transcripts, credentials, or raw paths.  The actual
+    durable memory remains owned by Hermes MemoryStore / a proven
+    provider target.
+    """
+
+    promotion_id: str
+    profile_label: str = ""
+    workspace_id: str = ""
+    project_id: str = ""
+    source_type: str = ""
+    source_id: str = ""
+    source_canonical_id: str = ""
+    source_relative_path: str = ""
+    source_hash: str = ""
+    source_hash_kind: str = ""
+    source_state: str = ""
+    assertion_type: str = ""
+    claim_hash: str = ""
+    target_kind: str = ""
+    candidate_identity: str = ""
+    status: str = ""
+    eligibility_decision: str = ""
+    rejection_code: str = ""
+    failure_code: str = ""
+    superseded_by: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+    approved_at: Optional[str] = None
+    promoted_at: Optional[str] = None
+
+
+class PromotionRecordError(WorkspaceError):
+    """Base error for promotion-ledger operations."""
+
+    def __init__(self, message: str, code: str = "PROMOTION_ERROR"):
+        super().__init__(message, code=code)
+
+
+class PromotionRecordNotFoundError(PromotionRecordError):
+    def __init__(self, promotion_id: str):
+        super().__init__(
+            f"Promotion record not found: {promotion_id}",
+            code="PROMOTION_NOT_FOUND",
+        )
+
+
+class PromotionRecordExistsError(PromotionRecordError):
+    def __init__(self, candidate_identity: str):
+        super().__init__(
+            f"Promotion record already exists for candidate identity: {candidate_identity}",
+            code="PROMOTION_DUPLICATE",
+        )

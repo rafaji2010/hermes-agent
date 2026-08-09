@@ -96,7 +96,7 @@ def test_upgrade_from_006_preserves_legacy_adr():
 
         runner = MigrationRunner(conn)
         applied = runner.run_pending()
-        assert applied == 1, "only migration 007 should be pending"
+        assert applied == 2, "migrations 007 and 008 should be pending"
 
         row = conn.execute(
             "SELECT * FROM adrs WHERE id = 'adr1'"
@@ -112,6 +112,7 @@ def test_upgrade_from_006_preserves_legacy_adr():
 
         versions = {r[0] for r in conn.execute("SELECT version FROM _migrations")}
         assert 7 in versions
+        assert 8 in versions
     finally:
         conn.close()
 
@@ -120,7 +121,7 @@ def test_upgrade_then_runner_idempotent():
     """After upgrading to 007, another run applies nothing."""
     conn = sqlite3.connect(":memory:")
     try:
-        _apply_through(conn, 7)
+        _apply_through(conn, 8)
         runner = MigrationRunner(conn)
         assert runner.run_pending() == 0
     finally:

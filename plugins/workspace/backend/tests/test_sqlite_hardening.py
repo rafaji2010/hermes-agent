@@ -42,7 +42,7 @@ _REAL_MIGRATIONS_DIR = Path(
     __import__("plugins.workspace.backend.migrations", fromlist=["__file__"]).__file__
 ).parent
 
-_ALL_VERSIONS = {1, 2, 3, 4, 5, 6, 7}
+_ALL_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8}
 
 
 @pytest.fixture(autouse=True)
@@ -298,7 +298,7 @@ def test_failed_migration_atomic_and_recoverable(tmp_path):
     mig_dir = tmp_path / "migs"
     mig_dir.mkdir()
     _copy_real_migrations(mig_dir)
-    (mig_dir / "008_failing.sql").write_text(
+    (mig_dir / "009_failing.sql").write_text(
         "CREATE TABLE should_not_exist (id INTEGER);\nTHIS IS NOT SQL;\n",
         encoding="utf-8",
     )
@@ -319,12 +319,12 @@ def test_failed_migration_atomic_and_recoverable(tmp_path):
     assert row is None
 
     # Fix the migration and retry — recovery succeeds.
-    (mig_dir / "008_failing.sql").write_text(
+    (mig_dir / "009_failing.sql").write_text(
         "CREATE TABLE should_not_exist (id INTEGER);\n", encoding="utf-8"
     )
     runner2 = MigrationRunner(conn, migrations_dir=mig_dir)
     assert runner2.run_pending() == 1
-    assert _versions(conn) == _ALL_VERSIONS | {8}
+    assert _versions(conn) == _ALL_VERSIONS | {9}
     assert MigrationRunner(conn, migrations_dir=mig_dir).run_pending() == 0
 
 
@@ -364,7 +364,7 @@ def test_sentinel_recovery_records_without_reapply(tmp_path):
 
     # No duplicate-column error: 007 was recovered via its sentinel and
     # every version is now recorded.
-    assert applied == 7
+    assert applied == 8  # 001/003-006/008 applied, 002/007 sentinel-recovered
     assert _versions(conn) == _ALL_VERSIONS
     assert MigrationRunner(conn).run_pending() == 0
 
@@ -390,9 +390,10 @@ def test_newer_schema_left_untouched(tmp_path):
     conn.commit()
 
     # A database from a NEWER schema (all known migrations recorded plus an
-    # unknown future version) must not be re-migrated or touched.
+    # unknown future version) must not be re-migrated or touched — except
+    # the one real migration this build knows that the seeded DB lacks.
     runner = MigrationRunner(conn)
-    assert runner.run_pending() == 0
+    assert runner.run_pending() == 1  # 008 applies; 99 is left untouched
     assert _versions(conn) == _ALL_VERSIONS | {99}
 
 
@@ -412,7 +413,7 @@ def test_concurrent_initialization_across_processes(tmp_path):
         "conn = mgr.get_connection()\n"
         "versions = {int(r[0]) for r in conn.execute("
         "'SELECT version FROM _migrations')}\n"
-        "assert versions == {1, 2, 3, 4, 5, 6, 7}, versions\n"
+        "assert versions == {1, 2, 3, 4, 5, 6, 7, 8}, versions\n"
         "print('ok')\n"
     )
 

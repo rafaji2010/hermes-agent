@@ -58,7 +58,7 @@ def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     return any(str(r[1]) == column for r in cols)
 
 
-# version -> sentinel predicate.  Kept in sync with migrations 001-007;
+# version -> sentinel predicate.  Kept in sync with migrations 001-008;
 # a new migration MUST add its sentinel here.
 _SENTINELS: Dict[int, Callable[[sqlite3.Connection], bool]] = {
     1: lambda c: _table_exists(c, "workspaces"),
@@ -68,6 +68,7 @@ _SENTINELS: Dict[int, Callable[[sqlite3.Connection], bool]] = {
     5: lambda c: _table_exists(c, "tasks"),
     6: lambda c: _column_exists(c, "workspaces", "hermes_project_id"),
     7: lambda c: _column_exists(c, "adrs", "canonical_path"),
+    8: lambda c: _table_exists(c, "workspace_memory_promotions"),
 }
 
 

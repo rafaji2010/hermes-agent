@@ -54,6 +54,8 @@ from ..models import (
     JournalEntryNotFoundError,
     MilestoneNotFoundError,
     ProjectLinkError,
+    PromotionRecord,
+    PromotionRecordExistsError,
     RoadmapNotFoundError,
     TaskNotFoundError,
     WorkspaceNotFoundError,
@@ -1281,6 +1283,125 @@ class SQLiteStorage(AbstractStorage):
         )
 
     # ------------------------------------------------------------------
+    # Memory promotion ledger (S7.5.3)
+    # ------------------------------------------------------------------
+    #
+    # Metadata-only: stores identity references, hashes, and lifecycle
+    # state.  NEVER stores claim text, transcripts, credentials, or raw
+    # paths.  Dedup is deterministic via the UNIQUE
+    # (profile_label, candidate_identity) index — a repeated equivalent
+    # candidate returns the existing record.
+
+    def create_promotion_record(self, fields: dict) -> "PromotionRecord":
+        """Insert a promotion ledger row.
+
+        Returns the created record.  Raises
+        ``PromotionRecordExistsError`` when a row with the same
+        ``(profile_label, candidate_identity)`` already exists.
+        """
+        promotion_id = fields.get("promotion_id") or _new_id()
+        try:
+            self._conn.execute(
+                """INSERT INTO workspace_memory_promotions (
+                    promotion_id, profile_label, workspace_id, project_id,
+                    source_type, source_id, source_canonical_id,
+                    source_relative_path, source_hash, source_hash_kind,
+                    source_state, assertion_type, claim_hash, target_kind,
+                    candidate_identity, status, eligibility_decision,
+                    rejection_code, failure_code, superseded_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    promotion_id,
+                    fields.get("profile_label", ""),
+                    fields.get("workspace_id", ""),
+                    fields.get("project_id", ""),
+                    fields.get("source_type", ""),
+                    fields.get("source_id", ""),
+                    fields.get("source_canonical_id", ""),
+                    fields.get("source_relative_path", ""),
+                    fields.get("source_hash", ""),
+                    fields.get("source_hash_kind", ""),
+                    fields.get("source_state", ""),
+                    fields.get("assertion_type", ""),
+                    fields.get("claim_hash", ""),
+                    fields.get("target_kind", ""),
+                    fields.get("candidate_identity", ""),
+                    fields.get("status", "proposed"),
+                    fields.get("eligibility_decision", ""),
+                    fields.get("rejection_code", ""),
+                    fields.get("failure_code", ""),
+                    fields.get("superseded_by", ""),
+                ),
+            )
+        except sqlite3.IntegrityError:
+            raise PromotionRecordExistsError(
+                fields.get("candidate_identity", "")
+            )
+        row = self._conn.execute(
+            "SELECT * FROM workspace_memory_promotions WHERE promotion_id = ?",
+            (promotion_id,),
+        ).fetchone()
+        return _promotion_record_from_row(row)
+
+    def get_promotion_record(self, promotion_id: str) -> Optional["PromotionRecord"]:
+        """Return a promotion record by id, or ``None``."""
+        row = self._conn.execute(
+            "SELECT * FROM workspace_memory_promotions WHERE promotion_id = ?",
+            (promotion_id,),
+        ).fetchone()
+        return _promotion_record_from_row(row) if row else None
+
+    def get_promotion_by_candidate_identity(
+        self, profile_label: str, candidate_identity: str
+    ) -> Optional["PromotionRecord"]:
+        """Return the existing record for a candidate identity (deterministic
+        dedup — same candidate, same profile → same record)."""
+        row = self._conn.execute(
+            "SELECT * FROM workspace_memory_promotions "
+            "WHERE profile_label = ? AND candidate_identity = ?",
+            (profile_label, candidate_identity),
+        ).fetchone()
+        return _promotion_record_from_row(row) if row else None
+
+    def update_promotion_record(self, promotion_id: str, fields: dict) -> Optional["PromotionRecord"]:
+        """Update mutable lifecycle fields on a promotion record.
+
+        Only lifecycle/state fields are updated — identity, source, and
+        claim metadata are immutable after creation.  Returns the updated
+        record or ``None`` when the row does not exist.
+        """
+        allowed = {
+            "status", "eligibility_decision", "rejection_code",
+            "failure_code", "superseded_by", "approved_at", "promoted_at",
+        }
+        sets = ["updated_at = datetime('now')"]
+        params: list = []
+        for key in allowed:
+            if key in fields:
+                sets.append(f"{key} = ?")
+                params.append(fields[key])
+        if not sets:
+            return self.get_promotion_record(promotion_id)
+        params.append(promotion_id)
+        self._conn.execute(
+            f"UPDATE workspace_memory_promotions SET {', '.join(sets)} "
+            f"WHERE promotion_id = ?",
+            params,
+        )
+        return self.get_promotion_record(promotion_id)
+
+    def list_promotion_records(
+        self, workspace_id: str, *, limit: int = 100
+    ) -> List["PromotionRecord"]:
+        """Return promotion records for a workspace, newest first."""
+        rows = self._conn.execute(
+            "SELECT * FROM workspace_memory_promotions "
+            "WHERE workspace_id = ? ORDER BY created_at DESC, promotion_id DESC LIMIT ?",
+            (workspace_id, limit),
+        ).fetchall()
+        return [_promotion_record_from_row(r) for r in rows]
+
+    # ------------------------------------------------------------------
     # Task helpers
     # ------------------------------------------------------------------
 
@@ -1438,4 +1559,33 @@ def _comment_from_row(row: sqlite3.Row) -> TaskComment:
         author=row["author"] or "",
         body=row["body"],
         created_at=row["created_at"],
+    )
+
+
+def _promotion_record_from_row(row: sqlite3.Row) -> PromotionRecord:
+    return PromotionRecord(
+        promotion_id=row["promotion_id"],
+        profile_label=row["profile_label"] or "",
+        workspace_id=row["workspace_id"] or "",
+        project_id=row["project_id"] or "",
+        source_type=row["source_type"] or "",
+        source_id=row["source_id"] or "",
+        source_canonical_id=row["source_canonical_id"] or "",
+        source_relative_path=row["source_relative_path"] or "",
+        source_hash=row["source_hash"] or "",
+        source_hash_kind=row["source_hash_kind"] or "",
+        source_state=row["source_state"] or "",
+        assertion_type=row["assertion_type"] or "",
+        claim_hash=row["claim_hash"] or "",
+        target_kind=row["target_kind"] or "",
+        candidate_identity=row["candidate_identity"] or "",
+        status=row["status"] or "",
+        eligibility_decision=row["eligibility_decision"] or "",
+        rejection_code=row["rejection_code"] or "",
+        failure_code=row["failure_code"] or "",
+        superseded_by=row["superseded_by"] or "",
+        created_at=row["created_at"] or "",
+        updated_at=row["updated_at"] or "",
+        approved_at=row["approved_at"],
+        promoted_at=row["promoted_at"],
     )

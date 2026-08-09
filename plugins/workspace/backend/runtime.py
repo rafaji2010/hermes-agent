@@ -46,6 +46,7 @@ from .services.assistant_service import WorkspaceAssistantService
 from .services.graph_service import GraphService
 from .services.journal_service import JournalService
 from .services.roadmap_service import RoadmapService
+from .services.promotion_service import PromotionService
 from .services.scope_resolver import ProjectScopeResolver
 from .services.search_service import SearchService
 from .services.task_service import TaskService
@@ -126,6 +127,11 @@ class WorkspaceRuntime:
             search=self._search_service,
             graph=self._graph_service,
             analytics=self._analytics_service,
+        )
+        self._promotion_service = PromotionService(
+            storage=self._storage,
+            authz=self._authz,
+            audit=self._audit,
         )
         self._scope_resolver = ProjectScopeResolver(storage=self._storage)
 
@@ -226,6 +232,10 @@ class WorkspaceRuntime:
     @property
     def assistant_service(self) -> WorkspaceAssistantService:
         return self._assistant_service
+
+    @property
+    def promotion_service(self) -> PromotionService:
+        return self._promotion_service
 
     @property
     def scope_resolver(self) -> ProjectScopeResolver:
