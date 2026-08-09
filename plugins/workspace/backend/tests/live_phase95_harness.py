@@ -269,6 +269,137 @@ def main() -> int:
               len(mapped_ctx) <= MAX_CONTEXT_CHARS and _TRUNCATION_MARKER == "\n...[workspace context truncated]...\n")
         print(f"   max context observed this run: {max(len(mapped_ctx), len(ctx_a2), len(degraded))} chars")
 
+        # --- 12. S7.5.4a PROMOTION EXECUTION (real memory_tool) ------------
+        from plugins.workspace.backend.models import ADRCreate
+        from plugins.workspace.backend.promotion_models import (
+            AssertionType, ProvenanceEnvelope, ScopeSnapshot,
+            SourceHashKind, SourceType, TargetKind,
+        )
+        from plugins.workspace.backend.promotion_contract import make_candidate
+        from plugins.workspace.backend.services.promotion_service import PromotionService
+
+        def _promotion_provenance(ws_id, adr_id, content_hash, profile, project_id="proj-a"):
+            return ProvenanceEnvelope(
+                source_type=SourceType.ADR, source_id=adr_id,
+                source_canonical_id="0001-live-promo",
+                source_relative_path="docs/adr/0001-live-promo.md",
+                source_hash=content_hash, source_hash_kind=SourceHashKind.SHA256_BYTES,
+                source_state="synced", workspace_id=ws_id, project_id=project_id,
+                profile_label=profile,
+            )
+
+        # Profile A: real runtime storage + a synced ADR source.
+        tok_p = set_hermes_home_override(str(home_a))
+        try:
+            rt = get_workspace_runtime()
+            adr = rt.adr_service.create_adr(ADRCreate(
+                workspace_id=wa, title="Live Promotion ADR", status="accepted",
+                category="", markdown="# Live Promotion ADR\nDecide JWT.", tags=[],
+            ))
+            # Canonical projection: mark the ADR synced with a content hash
+            # (the harness has no git repo to materialize into).
+            conn = rt.database.get_connection()
+            conn.execute(
+                "UPDATE adrs SET content_hash = ?, reconcile_state = 'synced', "
+                "source = 'git_file' WHERE id = ?",
+                ("d" * 64, adr.id),
+            )
+            conn.commit()
+            refreshed = rt.storage.get_adr(adr.id)
+            promo_svc = PromotionService(storage=rt.storage, audit=rt.audit)
+            prov = _promotion_provenance(wa, refreshed.id, refreshed.content_hash, "profile-a")
+            scope = ScopeSnapshot(
+                profile_label="profile-a", workspace_id=wa, workspace_name="ws-a",
+                project_id="proj-a", project_slug="proj-a",
+                scope_state="mapped", match_source="ledger",
+            )
+            cand = make_candidate(
+                claim_text="Live promotion: use JWT.",
+                assertion_type=AssertionType.CANONICAL_FACT,
+                target_kind=TargetKind.MEMORY, provenance=prov, scope=scope,
+                user_confirmed=True,
+            )
+            rec = promo_svc.propose(cand)
+            check("12.1 propose records eligible", rec.status == "eligible", rec.status)
+
+            executed = promo_svc.execute_promotion(
+                rec.promotion_id, "Live promotion: use JWT.",
+                workspace_id=wa, user_confirmed=True,
+            )
+            mem_a = (home_a / "memories" / "MEMORY.md")
+            mem_a_text = mem_a.read_text(encoding="utf-8") if mem_a.exists() else ""
+            check("12.2 promotion reaches promoted", executed.status == "promoted",
+                  executed.status)
+            check("12.3 MEMORY.md contains exact claim",
+                  "Live promotion: use JWT." in mem_a_text)
+            check("12.4 ledger promoted_at set", bool(executed.promoted_at))
+
+            # Profile B: no MEMORY.md entry for A's claim.
+            mem_b = (home_b / "memories" / "MEMORY.md")
+            mem_b_text = mem_b.read_text(encoding="utf-8") if mem_b.exists() else ""
+            check("12.5 profile B has no profile A claim",
+                  "Live promotion: use JWT." not in mem_b_text)
+
+            # Staged behavior: profile B with write_approval=true.
+            home_b_wa = _make_home(root, "profile-b-approval")
+            (home_b_wa / "config.yaml").write_text(
+                "memory:\n  write_approval: true\n"
+            )
+            tok_pb = set_hermes_home_override(str(home_b_wa))
+            try:
+                rt_b = get_workspace_runtime()
+                ws_b = rt_b.workspace_service.create_workspace(
+                    __import__("plugins.workspace.backend.models", fromlist=["WorkspaceCreate"]).WorkspaceCreate(name="ws-b-appr", path="")
+                )
+                adr_b = rt_b.adr_service.create_adr(ADRCreate(
+                    workspace_id=ws_b.id, title="Staged ADR", status="accepted",
+                    category="", markdown="# Staged\n", tags=[],
+                ))
+                conn_b = rt_b.database.get_connection()
+                conn_b.execute(
+                    "UPDATE adrs SET content_hash = ?, reconcile_state = 'synced', "
+                    "source = 'git_file' WHERE id = ?",
+                    ("e" * 64, adr_b.id),
+                )
+                conn_b.commit()
+                adr_b_ref = rt_b.storage.get_adr(adr_b.id)
+                svc_b = PromotionService(storage=rt_b.storage, audit=rt_b.audit)
+                prov_b = _promotion_provenance(
+                    ws_b.id, adr_b_ref.id, adr_b_ref.content_hash, "profile-b-approval",
+                    project_id="proj-b",
+                )
+                scope_b = ScopeSnapshot(
+                    profile_label="profile-b-approval", workspace_id=ws_b.id,
+                    workspace_name="ws-b-appr", project_id="proj-b",
+                    project_slug="proj-b", scope_state="mapped",
+                    match_source="ledger",
+                )
+                cand_b = make_candidate(
+                    claim_text="Staged claim: never auto-promote.",
+                    assertion_type=AssertionType.CANONICAL_FACT,
+                    target_kind=TargetKind.MEMORY, provenance=prov_b, scope=scope_b,
+                    user_confirmed=True,
+                )
+                rec_b = svc_b.propose(cand_b)
+                exec_b = svc_b.execute_promotion(
+                    rec_b.promotion_id, "Staged claim: never auto-promote.",
+                    workspace_id=ws_b.id, user_confirmed=True,
+                )
+                check("12.6 write_approval=true stays approved (staged)",
+                      exec_b.status == "approved", exec_b.status)
+                pending = list((home_b_wa / "pending" / "memory").glob("*.json"))
+                check("12.7 Hermes pending file created", len(pending) >= 1)
+                mem_b_wa = (home_b_wa / "memories" / "MEMORY.md")
+                mem_b_wa_text = mem_b_wa.read_text(encoding="utf-8") if mem_b_wa.exists() else ""
+                check("12.8 staged claim NOT written to MEMORY.md",
+                      "Staged claim: never auto-promote." not in mem_b_wa_text)
+            finally:
+                reset_hermes_home_override(tok_pb)
+                reset_workspace_runtimes()
+        finally:
+            reset_hermes_home_override(tok_p)
+            reset_workspace_runtimes()
+
     finally:
         plugins_mod._plugin_manager = saved_mgr
         reset_hermes_home_override(home_a_tok)

@@ -327,6 +327,97 @@ def evaluate_eligibility(candidate: PromotionCandidate) -> EligibilityResult:
 
 
 # ---------------------------------------------------------------------------
+# Execution helpers (S7.5.4a)
+# ---------------------------------------------------------------------------
+
+# Pre-approval ledger statuses from which execution may proceed.
+_PROMOTABLE_STATUSES = {"eligible", "proposed", "manual_only"}
+
+
+def is_promotable_status(status: str) -> bool:
+    """True when a ledger status is a pre-approval execution entry point.
+
+    ``promoted`` / ``approved`` / ``failed`` / ``rejected`` / ``superseded``
+    are NOT promotable here: they are handled by execute_promotion's
+    idempotency / terminal-state rules instead.
+    """
+    return status in _PROMOTABLE_STATUSES
+
+
+def structured_snapshot_fields(source_type: SourceType, row: Any) -> Dict[str, Any]:
+    """Canonical, deterministic field set for live freshness hashing of
+    mutable structured sources (journal/task/roadmap).
+
+    Excludes timestamps (``created_at`` / ``updated_at``) so a non-content
+    touch does not falsely stale a promotion, and excludes raw markdown
+    bodies.  The same field set is used at proposal time and at execution
+    revalidation, so the recorded ``source_hash`` and the live hash agree
+    only when the source content is unchanged.
+    """
+    if source_type == SourceType.JOURNAL:
+        return {
+            "id": getattr(row, "id", ""),
+            "workspace_id": getattr(row, "workspace_id", ""),
+            "title": getattr(row, "title", ""),
+            "summary": getattr(row, "summary", "") or "",
+            "entry_date": getattr(row, "entry_date", "") or "",
+            "tags": sorted(getattr(row, "tags", []) or []),
+        }
+    if source_type == SourceType.TASK:
+        return {
+            "id": getattr(row, "id", ""),
+            "workspace_id": getattr(row, "workspace_id", "") or "",
+            "title": getattr(row, "title", ""),
+            "status": getattr(row, "status", "") or "",
+            "priority": getattr(row, "priority", "") or "",
+            "labels": sorted(getattr(row, "labels", []) or []),
+            "due_date": getattr(row, "due_date", "") or "",
+            "estimate_hours": getattr(row, "estimate_hours", 0) or 0,
+        }
+    if source_type == SourceType.ROADMAP:
+        return {
+            "id": getattr(row, "id", ""),
+            "workspace_id": getattr(row, "workspace_id", "") or "",
+            "name": getattr(row, "name", ""),
+            "description": getattr(row, "description", "") or "",
+        }
+    raise ValueError(f"No canonical structured snapshot fields for {source_type.value}")
+
+
+def revalidate_for_execution(
+    candidate: PromotionCandidate,
+    live_source_hash: Optional[str],
+) -> EligibilityResult:
+    """Re-run eligibility with a live source hash before executing.
+
+    Deterministic and side-effect free.  A live hash that differs from the
+    candidate's recorded ``source_hash`` fails closed with
+    ``SOURCE_STALE`` — the source changed since the proposal was recorded.
+    ``live_source_hash=None`` means the source could not be verified and
+    the candidate is rejected.
+    """
+    result = evaluate_eligibility(candidate)
+    if result.decision != EligibilityDecision.ELIGIBLE:
+        return result
+
+    if live_source_hash is None:
+        return EligibilityResult(
+            decision=EligibilityDecision.REJECTED,
+            candidate=candidate,
+            rejection_code=RejectionCode.SOURCE_STALE,
+            reason="live source hash unavailable — cannot verify freshness",
+        )
+    if live_source_hash != candidate.provenance.source_hash:
+        return EligibilityResult(
+            decision=EligibilityDecision.REJECTED,
+            candidate=candidate,
+            rejection_code=RejectionCode.SOURCE_STALE,
+            reason="live source hash differs from the recorded source_hash",
+        )
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Helpers for building candidates
 # ---------------------------------------------------------------------------
 
