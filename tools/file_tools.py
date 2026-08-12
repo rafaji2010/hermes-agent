@@ -1558,6 +1558,16 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                         f"Use offset={end_line + 1} to continue reading "
                         f"(showing {offset}-{min(end_line, total_lines)} of {total_lines} lines)"
                     )
+                elif not page_text:
+                    # Deterministic recovery note for empty/past-EOF reads on
+                    # extracted documents (same principle as the text path).
+                    if total_lines == 0:
+                        result_dict["hint"] = "Extracted document is empty."
+                    else:
+                        result_dict["hint"] = (
+                            f"Past EOF — extracted document has {total_lines} lines; "
+                            f"retry with offset <= {total_lines}."
+                        )
                 content_len = len(result_dict["content"])
                 max_chars = _get_max_read_chars()
                 if content_len > max_chars:

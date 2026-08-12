@@ -933,6 +933,15 @@ class ShellFileOperations(FileOperations):
         """
         from tools.tool_output_limits import get_max_line_length
         max_line_length = get_max_line_length()
+        # A trailing newline is a line *terminator*, not a final empty line —
+        # splitting naively would number a phantom empty line (and an empty
+        # read would render as a phantom "1|").  Strip exactly one trailing
+        # newline so line numbers always match wc -l's count.  Interior blank
+        # lines are real lines and keep their numbers.
+        if not content:
+            return ""
+        if content.endswith('\n'):
+            content = content[:-1]
         lines = content.split('\n')
         numbered = []
         for i, line in enumerate(lines, start=start_line):
@@ -1162,8 +1171,20 @@ class ShellFileOperations(FileOperations):
         stat_result = self._exec(stat_cmd)
         
         if stat_result.exit_code != 0:
-            # File not found - try to suggest similar files
-            return self._suggest_similar_files(path)
+            # File not found — before suggesting similar files, try Unicode
+            # normalization variants (NFC/NFD) of the basename.  Invisible
+            # character mismatches (no-break space, decomposed accents) are a
+            # common agent failure; the repaired candidate lives in the same
+            # directory as the original, so any workspace-boundary check that
+            # passed for the original path holds for the repaired one too.
+            repaired = self._try_unicode_filename_repair(path)
+            if repaired is None:
+                return self._suggest_similar_files(path)
+            path = repaired
+            stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
+            stat_result = self._exec(stat_cmd)
+            if stat_result.exit_code != 0:
+                return self._suggest_similar_files(path)
         
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
         try:
@@ -1213,6 +1234,10 @@ class ShellFileOperations(FileOperations):
         # chunk (the marker lives at byte 0); later pages can't carry it.
         if offset == 1:
             read_output, _ = _strip_bom(read_output)
+        # Normalize CRLF to LF so line numbers and content are stable
+        # regardless of the file's original line-ending convention.
+        if "\r\n" in read_output:
+            read_output = read_output.replace("\r\n", "\n")
         
         # Get total line count
         wc_cmd = f"wc -l < {self._escape_shell_arg(path)}"
@@ -1228,6 +1253,20 @@ class ShellFileOperations(FileOperations):
         hint = None
         if truncated:
             hint = f"Use offset={end_line + 1} to continue reading (showing {offset}-{end_line} of {total_lines} lines)"
+        elif not read_output:
+            # Deterministic recovery note instead of an unexplained empty
+            # read — a blank page is a confusing tool failure, and the model
+            # cannot reliably tell "empty file" from "offset past EOF" on its
+            # own.  The tool does this deterministic reasoning instead.
+            if file_size == 0:
+                hint = "File is empty."
+            elif offset > total_lines:
+                hint = (
+                    f"Past EOF — file has {total_lines} lines; "
+                    f"retry with offset <= {total_lines}."
+                )
+            else:
+                hint = "No content in the requested range."
         
         return ReadResult(
             content=self._add_line_numbers(read_output, offset),
@@ -1237,6 +1276,32 @@ class ShellFileOperations(FileOperations):
             hint=hint
         )
     
+    def _try_unicode_filename_repair(self, path: str) -> str | None:
+        """Return a normalized (NFC/NFD) variant of *path* that exists.
+
+        Repairs invisible-character mismatches (NFC vs NFD accents, regular
+        vs no-break space, curly vs straight quotes) by testing the two
+        canonical Unicode normalization forms of the basename.  Bounded to
+        exactly two probes; the repaired path is in the same directory as the
+        original, so workspace-boundary guarantees of the original path are
+        preserved by construction.
+        """
+        import unicodedata
+
+        candidate = Path(self._expand_path(path))
+        name = candidate.name
+        variants = {
+            unicodedata.normalize(form, name)
+            for form in ("NFC", "NFD")
+            if unicodedata.normalize(form, name) != name
+        }
+        for normalized in variants:
+            repaired = str(candidate.with_name(normalized))
+            probe = self._exec(f"wc -c < {self._escape_shell_arg(repaired)} 2>/dev/null")
+            if probe.exit_code == 0:
+                return repaired
+        return None
+
     def _suggest_similar_files(self, path: str) -> ReadResult:
         """Suggest similar files when the requested file is not found."""
         dir_path = os.path.dirname(path) or "."
