@@ -46,6 +46,7 @@ from agent.prompt_builder import (
     TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    UNTRUSTED_CONTENT_RULE,
     drain_truncation_warnings,
 )
 from agent.runtime_cwd import resolve_context_cwd
@@ -222,6 +223,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # (default True) and only injected when tools are actually loaded.
     if getattr(agent, "_parallel_tool_call_guidance", True) and agent.valid_tool_names:
         stable_parts.append(PARALLEL_TOOL_CALL_GUIDANCE)
+
+    # Untrusted-content doctrine — always on (security, not preference).
+    # Complements the per-result <untrusted_tool_result> wrappers with a
+    # stable-tier rule that survives weak instruction-following and covers
+    # unwrapped content (documents read back via read_file, screenshots).
+    stable_parts.append(UNTRUSTED_CONTENT_RULE)
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []

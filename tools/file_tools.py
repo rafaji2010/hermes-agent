@@ -589,6 +589,58 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
     return False
 
 
+# Writes have a different risk profile than reads: writing to a device can
+# corrupt disks (/dev/sda, /dev/nvme*), trash memory (/dev/mem), or hang
+# (/dev/zero fills forever).  Only /dev/null is a legitimate write target
+# (a common discard sink).  Checked by path, symlink hops, and realpath —
+# the same traversal discipline as the read guard.
+_WRITE_ALLOWED_DEVICES = frozenset({"/dev/null"})
+
+
+def _blocked_device_write_error(filepath: str, base_dir: str | Path | None = None) -> str | None:
+    """Return an error string if *filepath* resolves to a non-null device.
+
+    Allows exactly ``/dev/null``; every other path under ``/dev/`` (block
+    devices, terminals, ``/dev/zero``, ``/dev/random``, ``/dev/mem``) is
+    refused before any I/O happens.  Literal path, each symlink hop, and the
+    final realpath are all checked so aliases cannot bypass the guard.
+    """
+    expanded = _expand_tilde(filepath)
+    if base_dir is not None and not os.path.isabs(expanded):
+        expanded = os.path.join(os.fspath(base_dir), expanded)
+    normalized = os.path.normpath(expanded)
+    if normalized in _WRITE_ALLOWED_DEVICES:
+        return None
+
+    candidates = {normalized}
+    current = normalized
+    for _ in range(20):
+        try:
+            target = os.readlink(current)
+        except OSError:
+            break
+        if not os.path.isabs(target):
+            target = os.path.join(os.path.dirname(current), target)
+        target = os.path.normpath(target)
+        if target in candidates:
+            break
+        candidates.add(target)
+        current = target
+
+    try:
+        candidates.add(os.path.normpath(os.path.realpath(normalized)))
+    except (OSError, ValueError):
+        pass
+
+    if any(c.startswith("/dev/") and c not in _WRITE_ALLOWED_DEVICES for c in candidates):
+        return (
+            "Refusing to write to a device path (/dev/*): writing to devices can "
+            "corrupt disks or hang the process. Only /dev/null is permitted; "
+            "use a regular file path."
+        )
+    return None
+
+
 def _search_result_read_block_error(path: str, task_id: str = "default") -> str | None:
     """Return the read-safety error for a search result path.
 
@@ -2124,6 +2176,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
+    device_err = _blocked_device_write_error(path, task_id)
+    if device_err:
+        return tool_error(device_err)
     protected_err = _check_protected_instruction_write([path], task_id)
     if protected_err:
         return tool_error(protected_err)
@@ -2264,6 +2319,12 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     protected_err = _check_protected_instruction_write(_paths_to_check, task_id)
     if protected_err:
         return tool_error(protected_err)
+    # Device-write guard: any non-/dev/null device path in the patch (explicit
+    # path OR a V4A header) refuses the entire patch before any I/O.
+    for _p in _paths_to_check:
+        _dev_err = _blocked_device_write_error(_p, task_id)
+        if _dev_err:
+            return tool_error(_dev_err)
     try:
         # Resolve paths for locking.  Ordered + deduplicated so concurrent
         # callers lock in the same order — prevents deadlock on overlapping
