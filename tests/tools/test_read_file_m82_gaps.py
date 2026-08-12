@@ -48,15 +48,15 @@ class TestReadFileGapFixes(unittest.TestCase):
         _write(p, "one\ntwo\nthree\n")
         result = self._read(p, offset=10)
         self.assertEqual(result["total_lines"], 3)
-        self.assertIn("Past EOF", result["hint"])
-        self.assertIn("retry with offset <= 3", result["hint"])
+        self.assertIn("beyond the end of the file", result["hint"])
+        self.assertIn("Retry with offset <= 3", result["hint"])
 
     def test_empty_file_returns_explicit_note(self) -> None:
         p = os.path.join(self._tmp, "empty.txt")
         _write(p, "")
         result = self._read(p)
         self.assertEqual(result["total_lines"], 0)
-        self.assertEqual(result["hint"], "File is empty.")
+        self.assertEqual(result["hint"], "File is empty (0 bytes).")
 
     def test_in_range_read_has_no_recovery_note(self) -> None:
         p = os.path.join(self._tmp, "three.txt")
