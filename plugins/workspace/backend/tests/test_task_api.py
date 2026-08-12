@@ -165,3 +165,23 @@ def test_health_includes_task_counts():
     assert data["task_count"] >= 2
     assert data["open_task_count"] >= 2
     assert data["blocked_task_count"] >= 1
+
+
+def test_execution_board_proxy():
+    """M11.4 — the execution-board proxy returns the kanban board shape.
+
+    The renderer's plugin REST namespace cannot cross plugins, so the
+    workspace backend proxies the kanban board (ADR-010 execution layer).
+    The isolated test home auto-initializes an empty board — assert the
+    contract (columns with name + tasks), not specific cards.
+    """
+    c = client()
+    resp = c.get("/v1/execution-board")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "columns" in data
+    assert isinstance(data["columns"], list)
+    for col in data["columns"]:
+        assert "name" in col
+        assert "tasks" in col
+    assert "latest_event_id" in data

@@ -14,6 +14,7 @@ import { atom, cn, Codicon, type PluginContext, useValue } from '@hermes/plugin-
 import { ADRPage } from './adr-page'
 import { AnalyticsPage } from './analytics-page'
 import { AssistantPage } from './assistant-page'
+import { BoardPage } from './board-page'
 import { JournalPage } from './journal-page'
 import { RoadmapsPage } from './roadmaps-page'
 import { SearchPage } from './search-page'
@@ -26,6 +27,7 @@ export type WorkspaceTab =
   | 'journal'
   | 'roadmaps'
   | 'tasks'
+  | 'board'
   | 'search'
   | 'analytics'
   | 'assistant'
@@ -42,6 +44,7 @@ export const WORKSPACE_TABS: WorkspaceTabDef[] = [
   { id: 'journal', label: 'Journal', codicon: 'note' },
   { id: 'roadmaps', label: 'Roadmaps', codicon: 'map' },
   { id: 'tasks', label: 'Tasks', codicon: 'checklist' },
+  { id: 'board', label: 'Board', codicon: 'columns' },
   { id: 'search', label: 'Search', codicon: 'search' },
   { id: 'analytics', label: 'Analytics', codicon: 'graph-line' },
   { id: 'assistant', label: 'Assistant', codicon: 'comment-discussion' },
@@ -98,6 +101,7 @@ export function WorkspaceShell({ ctx }: WorkspaceShellProps) {
         {tab === 'journal' && <JournalPage ctx={ctx} />}
         {tab === 'roadmaps' && <RoadmapsPage ctx={ctx} />}
         {tab === 'tasks' && <TasksPage ctx={ctx} />}
+        {tab === 'board' && <BoardPage ctx={ctx} />}
         {tab === 'search' && <SearchPage ctx={ctx} />}
         {tab === 'analytics' && <AnalyticsPage ctx={ctx} />}
         {tab === 'assistant' && <AssistantPage ctx={ctx} />}

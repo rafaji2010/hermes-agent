@@ -2221,3 +2221,30 @@ def assistant_suggestions(workspace_id: str = Query(default=""),
     """Get recommended actions and prompts for the assistant."""
     workspace_id = _require_scope(workspace_id, session_id)
     return _assistant_service().get_suggestions(workspace_id)
+
+
+@router.get("/execution-board")
+def execution_board(tenant: Optional[str] = None,
+                    include_archived: bool = False):
+    """Kanban execution board (ADR-010 execution layer).
+
+    The renderer's plugin REST namespace is scoped by construction to
+    ``/api/plugins/workspace`` — it cannot address the kanban plugin's API.
+    This endpoint proxies ``plugins.kanban.dashboard.plugin_api.get_board``
+    (same process, no HTTP hop) so the desktop workspace pane can render
+    the execution board (M11.4).
+    """
+    try:
+        from plugins.kanban.dashboard.plugin_api import get_board
+    except Exception as exc:  # pragma: no cover — kanban plugin missing
+        raise HTTPException(
+            status_code=503,
+            detail=f"kanban plugin unavailable: {exc}",
+        ) from exc
+    return get_board(
+        board=None,  # explicit: Query() sentinels don't resolve outside the framework
+        tenant=tenant,
+        include_archived=include_archived,
+        workflow_template_id=None,
+        current_step_key=None,
+    )
