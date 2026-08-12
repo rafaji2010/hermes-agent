@@ -3,6 +3,9 @@
  * Add new themes here — no code changes needed elsewhere.
  */
 
+import type { HermesSkin } from '@hermes/shared/skin'
+
+import { skinToDesktopTheme } from './skin'
 import type { DesktopTheme, DesktopThemeTypography } from './types'
 
 // Color-emoji fonts to append to every stack as a last resort. None of the UI
@@ -276,13 +279,119 @@ export const slateTheme: DesktopTheme = {
   }
 }
 
+// ── Curated dark skins (hermes-skins-pack · bchop-studio · MIT) ─────────────
+// Converted through the same skinToDesktopTheme path the backend sync uses, so
+// each built-in's desktop palette is byte-identical to its live-synced form.
+// Seed colors are the pack's load-bearing tokens; labels/descriptions are
+// humanized here since the converter only title-cases the name.
+const CURATED_DARK_SKINS: HermesSkin[] = [
+  {
+    name: 'neon-ghost',
+    colors: {
+      background: '#0a0a0f', status_bar_bg: '#05050a', ui_text: '#e0e0ff', banner_text: '#e0e0ff',
+      status_bar_text: '#c0c0d0', ui_accent: '#ff00ff', banner_accent: '#ff00ff', banner_title: '#00ffff',
+      ui_border: '#ff00ff', banner_border: '#ff00ff', banner_dim: '#7d3c98', session_border: '#7d3c98',
+      ui_error: '#ff3366', completion_menu_bg: '#0a0a0f'
+    }
+  },
+  {
+    name: 'midnight-studio',
+    colors: {
+      background: '#1a1a2e', status_bar_bg: '#121224', ui_text: '#d8d0c8', banner_text: '#d8d0c8',
+      status_bar_text: '#a09888', ui_accent: '#c8a050', banner_accent: '#c8a050', banner_title: '#e8d080',
+      ui_border: '#504868', banner_border: '#c8a050', banner_dim: '#504868', session_border: '#504868',
+      ui_error: '#b05850', completion_menu_bg: '#1a1a2e'
+    }
+  },
+  {
+    name: 'ultraviolet',
+    colors: {
+      background: '#10061c', status_bar_bg: '#08030e', ui_text: '#e8dcf4', banner_text: '#e8dcf4',
+      status_bar_text: '#e8dcf4', ui_accent: '#b45cff', banner_accent: '#b45cff', banner_title: '#b45cff',
+      ui_border: '#38204e', banner_border: '#38204e', banner_dim: '#6f5a88', session_border: '#28163a',
+      ui_error: '#ff5c88', completion_menu_bg: '#10061c'
+    }
+  },
+  {
+    name: 'chrome-rain',
+    colors: {
+      background: '#120c2e', status_bar_bg: '#0a081c', ui_text: '#e8def8', banner_text: '#e8def8',
+      status_bar_text: '#c8c0d8', ui_accent: '#e6398c', banner_accent: '#e6398c', banner_title: '#4dc9f6',
+      ui_border: '#4dc9f6', banner_border: '#e6398c', banner_dim: '#6b5fa0', session_border: '#6b5fa0',
+      ui_error: '#e74c3c', completion_menu_bg: '#120c2e'
+    }
+  },
+  {
+    name: 'void-sunset',
+    colors: {
+      background: '#1a1030', status_bar_bg: '#0f0820', ui_text: '#e6d8f0', banner_text: '#e6d8f0',
+      status_bar_text: '#c8b8d8', ui_accent: '#ff5fd2', banner_accent: '#ff5fd2', banner_title: '#ffb870',
+      ui_border: '#ffb870', banner_border: '#ff5fd2', banner_dim: '#7a5fa0', session_border: '#7a5fa0',
+      ui_error: '#ff5fd2', completion_menu_bg: '#1a1030'
+    }
+  },
+  {
+    name: 'nebula-drift',
+    colors: {
+      background: '#120e1e', status_bar_bg: '#09070f', ui_text: '#ded8ec', banner_text: '#ded8ec',
+      status_bar_text: '#ded8ec', ui_accent: '#a878e8', banner_accent: '#a878e8', banner_title: '#a878e8',
+      ui_border: '#342c48', banner_border: '#342c48', banner_dim: '#6c6482', session_border: '#262037',
+      ui_error: '#e06080', completion_menu_bg: '#120e1e'
+    }
+  },
+  {
+    name: 'deep-void',
+    colors: {
+      background: '#000000', status_bar_bg: '#000000', ui_text: '#b0a0c0', banner_text: '#b0a0c0',
+      status_bar_text: '#807090', ui_accent: '#7060a0', banner_accent: '#7060a0', banner_title: '#9080c0',
+      ui_border: '#3a3050', banner_border: '#3a3050', banner_dim: '#2a2040', session_border: '#2a2040',
+      ui_error: '#904040', completion_menu_bg: '#050508'
+    }
+  },
+  {
+    name: 'obsidian',
+    colors: {
+      background: '#0f0f0f', status_bar_bg: '#080808', ui_text: '#d0d0d0', banner_text: '#d0d0d0',
+      status_bar_text: '#a0a0a0', ui_accent: '#787878', banner_accent: '#787878', banner_title: '#a0a0a0',
+      ui_border: '#555555', banner_border: '#555555', banner_dim: '#444444', session_border: '#444444',
+      ui_error: '#c05050', completion_menu_bg: '#0f0f0f'
+    }
+  },
+  {
+    name: 'eclipse',
+    colors: {
+      background: '#18181a', status_bar_bg: '#101012', ui_text: '#d0d0d8', banner_text: '#d0d0d8',
+      status_bar_text: '#9898a0', ui_accent: '#9a88c0', banner_accent: '#9a88c0', banner_title: '#c8b8e8',
+      ui_border: '#6a5a8a', banner_border: '#6a5a8a', banner_dim: '#3a3050', session_border: '#3a3050',
+      ui_error: '#b86868', completion_menu_bg: '#18181a'
+    }
+  }
+]
+
+const CURATED_THEME_META: Record<string, { label: string; description: string }> = {
+  'neon-ghost': { label: 'Neon Ghost', description: 'Electric ghost in the machine — hot magenta on void black' },
+  'midnight-studio': { label: 'Midnight Studio', description: 'Late-night coding den — dark indigo with warm gold accents' },
+  ultraviolet: { label: 'Ultraviolet', description: 'Club dark under blacklight — lilac text, violet-laser accents' },
+  'chrome-rain': { label: 'Chrome Rain', description: 'Wet chrome streets at midnight — electric blue and hot pink' },
+  'void-sunset': { label: 'Void Sunset', description: 'Neon sunset bleeding into a dead channel — violet and tangerine' },
+  'nebula-drift': { label: 'Nebula Drift', description: 'Interstellar gas — lavender text with violet accents' },
+  'deep-void': { label: 'Deep Void', description: 'True AMOLED black with barely-there violet undertones' },
+  obsidian: { label: 'Obsidian', description: 'Polished black glass — cool silver text and crimson alerts' },
+  eclipse: { label: 'Eclipse', description: 'Total solar eclipse — charcoal with a soft lilac corona' }
+}
+
+const curatedDarkThemes: DesktopTheme[] = CURATED_DARK_SKINS.map(skin => skinToDesktopTheme(skin))
+  .filter((t): t is DesktopTheme => t !== null)
+  .map(t => ({ ...t, ...CURATED_THEME_META[t.name] }))
+
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   nous: nousTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
-  slate: slateTheme
+  slate: slateTheme,
+  ...Object.fromEntries(curatedDarkThemes.map(t => [t.name, t]))
 }
 
 export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)
