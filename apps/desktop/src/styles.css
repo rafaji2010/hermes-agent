@@ -2952,3 +2952,13 @@ html:has([data-hud-shell]) [data-slot='popover-content'] {
 [data-hud-shell] [data-slot='composer-bounds'] *::-webkit-scrollbar {
   display: none;
 }
+
+/* Native <select> option popups (Chromium/Electron) render on a white
+   system surface but inherit the control's text color — in dark themes the
+   inherited color is light, so the dropdown options become light-on-white
+   and visually merge with the overlay. Force a fixed readable pair for the
+   popup; the closed control keeps its themed colors. */
+select option {
+  background-color: #ffffff;
+  color: #111827;
+}

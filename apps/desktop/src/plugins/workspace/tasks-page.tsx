@@ -45,19 +45,19 @@ import {
 // ---------------------------------------------------------------------------
 
 const STATUS_COLORS: Record<string, string> = {
-  todo: 'bg-gray-500/10 text-gray-500 border-gray-500/20',
-  in_progress: 'bg-blue-500/10 text-blue-500 border-blue-500/20',
-  blocked: 'bg-red-500/10 text-red-500 border-red-500/20',
-  review: 'bg-purple-500/10 text-purple-500 border-purple-500/20',
-  done: 'bg-green-500/10 text-green-500 border-green-500/20',
-  cancelled: 'bg-orange-500/10 text-orange-500 border-orange-500/20',
+  todo: 'bg-gray-500/15 text-gray-700 border-gray-500/30 dark:bg-gray-400/20 dark:text-gray-100 dark:border-gray-400/40',
+  in_progress: 'bg-blue-500/15 text-blue-700 border-blue-500/30 dark:bg-blue-400/20 dark:text-blue-100 dark:border-blue-400/40',
+  blocked: 'bg-red-500/15 text-red-700 border-red-500/30 dark:bg-red-400/20 dark:text-red-100 dark:border-red-400/40',
+  review: 'bg-purple-500/15 text-purple-700 border-purple-500/30 dark:bg-purple-400/20 dark:text-purple-100 dark:border-purple-400/40',
+  done: 'bg-green-500/15 text-green-700 border-green-500/30 dark:bg-green-400/20 dark:text-green-100 dark:border-green-400/40',
+  cancelled: 'bg-orange-500/15 text-orange-700 border-orange-500/30 dark:bg-orange-400/20 dark:text-orange-100 dark:border-orange-400/40',
 }
 
 const PRIORITY_COLORS: Record<string, string> = {
-  critical: 'bg-red-500/10 text-red-400',
-  high: 'bg-orange-500/10 text-orange-400',
-  medium: 'bg-blue-500/10 text-blue-400',
-  low: 'bg-gray-500/10 text-gray-400',
+  critical: 'bg-red-500/15 text-red-700 dark:bg-red-400/20 dark:text-red-100',
+  high: 'bg-orange-500/15 text-orange-700 dark:bg-orange-400/20 dark:text-orange-100',
+  medium: 'bg-blue-500/15 text-blue-700 dark:bg-blue-400/20 dark:text-blue-100',
+  low: 'bg-gray-500/15 text-gray-600 dark:bg-gray-400/20 dark:text-gray-200',
 }
 
 const KANBAN_COLUMNS: { key: string; label: string }[] = [
@@ -432,6 +432,11 @@ export function TasksPage({ ctx }: TasksPageProps) {
     },
     enabled: Boolean(ws),
     staleTime: 0,
+    // The backend is authoritative for task state; other surfaces (REST
+    // writes from the agent, the CLI) change it without notifying this
+    // page. Poll quietly so the kanban/table view stays truthful without
+    // requiring a manual Refresh click or a window-focus event.
+    refetchInterval: 15_000,
   })
 
   const tasks = tasksQuery.data?.tasks ?? []
