@@ -20,7 +20,7 @@ import {
   useQueryClient,
   useValue,
 } from '@hermes/plugin-sdk'
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { scopeReady, useWorkspaceScope } from './scope'
 import { WorkspaceScopeNotice } from './scope-notice'
@@ -247,7 +247,7 @@ interface KanbanColumnProps {
 
 function KanbanColumn({ label, tasks, status, onSelect, onStatusChange }: KanbanColumnProps) {
   return (
-    <div className="flex flex-col min-w-[240px] max-w-[280px] flex-1">
+    <div className="flex flex-col min-w-[240px] max-w-[280px] flex-1" data-status={status}>
       <div className="flex items-center justify-between px-2 py-2">
         <span className="text-xs font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">
           {label}
@@ -462,6 +462,17 @@ export function TasksPage({ ctx }: TasksPageProps) {
     tasks: tasks.filter(t => t.status === col.key),
   }))
 
+  // When a status filter is active in kanban view, bring the matching
+  // column into view — otherwise the user sees a wall of empty columns
+  // and the filtered tasks (off-screen) look missing.
+  const boardRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (viewMode === 'kanban' && statusFilter) {
+      const el = boardRef.current?.querySelector(`[data-status="${statusFilter}"]`)
+      el?.scrollIntoView({ behavior: 'smooth', inline: 'start', block: 'nearest' })
+    }
+  }, [viewMode, statusFilter])
+
   if (!ws) {
     return (
       <div className="flex h-full flex-col">
@@ -545,7 +556,20 @@ export function TasksPage({ ctx }: TasksPageProps) {
           ) : tasks.length === 0 && !formOpen ? (
             <EmptyState description="Create your first task to get started." title="No tasks" />
           ) : viewMode === 'kanban' ? (
-            <div className="flex gap-4 overflow-x-auto pb-4" style={{ minHeight: '60vh' }}>
+            <>
+          {statusFilter && (
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-(--ui-text-secondary)">Filtered by:</span>
+              <StatusBadge status={statusFilter} />
+              <button
+                className="text-(--ui-text-tertiary) hover:text-(--ui-text-primary) underline"
+                onClick={() => setStatusFilter('')}
+              >
+                clear
+              </button>
+            </div>
+          )}
+            <div className="flex gap-4 overflow-x-auto pb-4" ref={boardRef} style={{ minHeight: '60vh' }}>
               {kanbanGroups.map(group => (
                 <KanbanColumn
                   key={group.key}
@@ -557,6 +581,7 @@ export function TasksPage({ ctx }: TasksPageProps) {
                 />
               ))}
             </div>
+            </>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
