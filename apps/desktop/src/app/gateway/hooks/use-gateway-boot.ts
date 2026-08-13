@@ -102,8 +102,34 @@ export function useGatewayBoot({
     }
 
     if (!desktop) {
-      failDesktopBoot('Desktop IPC bridge is unavailable.')
-      setSessionsLoading(false)
+      // The preload bridge (window.hermesDesktop) can race the renderer's
+      // first paint on slow hosts — especially under --no-sandbox, where
+      // Chromium's process setup is less deterministic. Failing instantly
+      // turned a sub-second race into a scary "Hermes couldn't start" card
+      // that a manual Retry always fixed. Instead: poll a bounded window
+      // for the bridge; if it arrives late, reload once so this boot effect
+      // re-runs with the bridge present (the preload is loaded by then, so
+      // the reload's boot finds it immediately and no second reload fires).
+      // Only genuine, persistent absence reaches the failure card.
+      let bridgeAttempts = 0
+      const BRIDGE_POLL_MS = 150
+      const MAX_BRIDGE_ATTEMPTS = 28 // ~4.2s
+
+      const waitForBridge = () => {
+        if (cancelled) return
+        if (window.hermesDesktop) {
+          window.location.reload()
+          return
+        }
+        bridgeAttempts += 1
+        if (bridgeAttempts < MAX_BRIDGE_ATTEMPTS) {
+          window.setTimeout(waitForBridge, BRIDGE_POLL_MS)
+        } else {
+          failDesktopBoot('Desktop IPC bridge is unavailable.')
+          setSessionsLoading(false)
+        }
+      }
+      waitForBridge()
 
       return () => void (cancelled = true)
     }

@@ -201,6 +201,27 @@ async function advanceBackoff() {
 }
 
 describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => {
+  it('waits for the preload bridge instead of failing instantly', () => {
+    // Simulates the preload race: the renderer paints before
+    // window.hermesDesktop exists (slow host / --no-sandbox). The boot must
+    // NOT fail immediately — it polls a bounded window first, and only a
+    // genuinely absent bridge reaches the failure card.
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = undefined
+
+    render(<Harness />)
+
+    const boot = $desktopBoot.get()
+    expect(boot.error).toBeNull()
+    expect(boot.phase).not.toBe('renderer.error')
+
+    // Past the bounded wait window (~4.2s of 150ms polls), persistent
+    // absence surfaces the error instead of looping forever.
+    act(() => {
+      vi.advanceTimersByTime(6_000)
+    })
+    expect($desktopBoot.get().error).toBe('Desktop IPC bridge is unavailable.')
+  })
+
   it('INITIAL boot against a dead VPS: getConnection hangs (waitForHermes) → app sits in the connecting combo, then fails', async () => {
     // The report's actual path: a fresh launch pointed at an unreachable VPS.
     // startHermes()'s remote branch awaits waitForHermes() for 45s before it
