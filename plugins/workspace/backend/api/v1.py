@@ -572,14 +572,14 @@ def _build_status() -> StatusResponse:
                     "SELECT COUNT(*) FROM tasks"
                 ).fetchone()[0]
                 open_task_count = conn.execute(
-                    "SELECT COUNT(*) FROM tasks WHERE status NOT IN ('done','cancelled')"
+                    "SELECT COUNT(*) FROM tasks WHERE status NOT IN ('completed','done','cancelled')"
                 ).fetchone()[0]
                 blocked_task_count = conn.execute(
                     "SELECT COUNT(*) FROM tasks WHERE status = 'blocked'"
                 ).fetchone()[0]
                 overdue_task_count = conn.execute(
                     "SELECT COUNT(*) FROM tasks WHERE due_date != '' AND due_date < date('now') "
-                    "AND status NOT IN ('done','cancelled')"
+                    "AND status NOT IN ('completed','done','cancelled')"
                 ).fetchone()[0]
             except Exception:
                 task_count = 0

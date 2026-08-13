@@ -49,6 +49,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
+from hermes_cli.kanban_db import LEGACY_STATUS_MAP
 from hermes_cli import kanban_diagnostics as kd
 
 log = logging.getLogger(__name__)
@@ -148,11 +149,30 @@ def _conn(board: Optional[str] = None):
 # tasks into ``todo`` and makes the dashboard look like the Scheduled column
 # disappeared.
 BOARD_COLUMNS: list[str] = [
-    "triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done",
+    "triage", "todo", "in_progress", "review", "blocked", "completed",
 ]
 
 
 _CARD_SUMMARY_PREVIEW_CHARS = 200
+
+
+def _completed_within_days(conn, task_id: str, days: int) -> bool:
+    """True when the task completed within the last ``days`` days."""
+    try:
+        row = conn.execute(
+            "SELECT updated_at FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if not row or not row["updated_at"]:
+            return False
+        from datetime import datetime, timedelta, timezone
+
+        updated = datetime.fromisoformat(str(row["updated_at"]).replace("Z", "+00:00"))
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=timezone.utc)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        return updated >= cutoff
+    except Exception:
+        return False
 
 
 def _task_dict(
@@ -470,6 +490,16 @@ def get_board(
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
+            # Unified 6-column model: map legacy statuses to their modern
+            # names (scheduled|ready -> todo, running -> in_progress,
+            # done -> completed).
+            raw_status = t.status
+            status = LEGACY_STATUS_MAP.get(raw_status, raw_status)
+            d["status"] = status
+            # 'completed' column = tasks completed in the last 7 days only
+            # (older completions drop off the board; they're still queryable).
+            if status == "completed" and not _completed_within_days(conn, t.id, 7):
+                continue
             diags = diagnostics_per_task.get(t.id)
             if diags:
                 # Full list goes into the payload so the drawer can render

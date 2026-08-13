@@ -45,11 +45,12 @@ import {
 // ---------------------------------------------------------------------------
 
 const STATUS_COLORS: Record<string, string> = {
+  triage: 'bg-yellow-500/15 text-yellow-700 border-yellow-500/30 dark:bg-yellow-400/20 dark:text-yellow-100 dark:border-yellow-400/40',
   todo: 'bg-gray-500/15 text-gray-700 border-gray-500/30 dark:bg-gray-400/20 dark:text-gray-100 dark:border-gray-400/40',
   in_progress: 'bg-blue-500/15 text-blue-700 border-blue-500/30 dark:bg-blue-400/20 dark:text-blue-100 dark:border-blue-400/40',
-  blocked: 'bg-red-500/15 text-red-700 border-red-500/30 dark:bg-red-400/20 dark:text-red-100 dark:border-red-400/40',
   review: 'bg-purple-500/15 text-purple-700 border-purple-500/30 dark:bg-purple-400/20 dark:text-purple-100 dark:border-purple-400/40',
-  done: 'bg-green-500/15 text-green-700 border-green-500/30 dark:bg-green-400/20 dark:text-green-100 dark:border-green-400/40',
+  blocked: 'bg-red-500/15 text-red-700 border-red-500/30 dark:bg-red-400/20 dark:text-red-100 dark:border-red-400/40',
+  completed: 'bg-green-500/15 text-green-700 border-green-500/30 dark:bg-green-400/20 dark:text-green-100 dark:border-green-400/40',
   cancelled: 'bg-orange-500/15 text-orange-700 border-orange-500/30 dark:bg-orange-400/20 dark:text-orange-100 dark:border-orange-400/40',
 }
 
@@ -61,11 +62,12 @@ const PRIORITY_COLORS: Record<string, string> = {
 }
 
 const KANBAN_COLUMNS: { key: string; label: string }[] = [
+  { key: 'triage', label: 'Triage' },
   { key: 'todo', label: 'To Do' },
   { key: 'in_progress', label: 'In Progress' },
-  { key: 'blocked', label: 'Blocked' },
   { key: 'review', label: 'Review' },
-  { key: 'done', label: 'Done' },
+  { key: 'blocked', label: 'Blocked' },
+  { key: 'completed', label: 'Completed' },
 ]
 
 // ---------------------------------------------------------------------------
@@ -160,7 +162,7 @@ function TaskForm({ workspaceId, editing, onCancel, onDone, ctx }: TaskFormProps
             onChange={e => setStatus(e.target.value)}
             value={status}
           >
-            {['todo', 'in_progress', 'blocked', 'review', 'done', 'cancelled'].map(s => (
+            {['triage', 'todo', 'in_progress', 'review', 'blocked', 'completed'].map(s => (
               <option key={s} value={s}>{s.replace('_', ' ')}</option>
             ))}
           </select>

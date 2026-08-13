@@ -99,8 +99,21 @@ _log = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
-VALID_INITIAL_STATUSES = {"running", "blocked"}
+# The unified 6-column model (2026-08-13, user decision): the SAME status
+# vocabulary everywhere (Tasks / Board / Graph / Roadmaps).  Old statuses
+# are mapped on read: scheduled|ready -> todo, running -> in_progress,
+# done -> completed, review stays review.
+VALID_STATUSES = {"triage", "todo", "in_progress", "review", "blocked", "completed", "archived"}
+VALID_INITIAL_STATUSES = {"in_progress", "blocked"}
+
+# Legacy statuses that are still stored in DB rows but no longer valid;
+# the UI and board surface them under their mapped modern status.
+LEGACY_STATUS_MAP = {
+    "scheduled": "todo",
+    "ready": "todo",
+    "running": "in_progress",
+    "done": "completed",
+}
 
 # Typed block reasons. Distinguishes the two fundamentally different things a
 # worker (or human) means by "blocked", so each can be routed differently
@@ -2989,9 +3002,14 @@ def create_task(
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
-        raise ValueError(
-            f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
-        )
+        # Backward-compatible: accept the legacy name for the same state
+        # (running -> in_progress) so old callers/tests keep working.
+        if initial_status in LEGACY_STATUS_MAP:
+            initial_status = LEGACY_STATUS_MAP[initial_status]
+        else:
+            raise ValueError(
+                f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
+            )
     if workspace_kind not in VALID_WORKSPACE_KINDS:
         raise ValueError(
             f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "

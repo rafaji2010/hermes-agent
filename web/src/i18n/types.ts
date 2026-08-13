@@ -117,6 +117,15 @@ export interface Translations {
     managingProfileBanner?: string;
   };
 
+  // ── Artifacts page ──
+  artifacts?: {
+    title: string;
+    subtitle: string;
+    emptyTitle: string;
+    emptyDescription: string;
+    emptyHint: string;
+  };
+
   // ── Status page ──
   status: {
     actionFailed: string;
