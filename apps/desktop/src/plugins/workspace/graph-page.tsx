@@ -1,22 +1,81 @@
 /**
- * Graph Page — M12.1 knowledge visualization (ADR-002 adopt-before-build).
+ * Graph Page — knowledge graph as a tldraw diagram.
  *
- * Renders the workspace knowledge graph from the existing `/v1/graph` API
- * (graph_service.py — 153 nodes / 152 edges across workspace, roadmaps,
- * milestones, tasks, ADRs, journals) as a d3-force force-directed layout.
- * d3-force is already a dependency of the desktop app (M12.1 recommendation:
- * ADOPT existing substrate, build one page).
+ * Replaces the previous d3-force force-directed SVG layout with a tldraw
+ * canvas (the same offline substrate as the Whiteboard plugin). The graph is
+ * rendered as box nodes connected by arrows — projects (workspace/roadmap)
+ * on the left, milestones in the middle, tasks (and other leaf entities) on
+ * the right — a deterministic layered layout, not a physics simulation.
+ *
+ * tldraw is already a dependency (bundled by the M12.5 whiteboard plugin);
+ * this page reuses the same local/offline asset wiring so nothing reaches
+ * the network.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import '@tldraw/tldraw/tldraw.css'
+
+import type { PluginContext } from '@hermes/plugin-sdk'
+import { EmptyState, ErrorState, Loader, useQuery } from '@hermes/plugin-sdk'
 import {
-  EmptyState,
-  ErrorState,
-  Loader,
-  type PluginContext,
-  useQuery,
-} from '@hermes/plugin-sdk'
-import * as d3 from 'd3-force'
+  createShapeId,
+  createTLStore,
+  iconTypes,
+  Tldraw,
+  toRichText,
+  type Editor,
+  type TLDefaultColorStyle,
+  type TLCreateShapePartial,
+  type TLEditorAssetUrls,
+  type TLShapeId,
+  type TLStore
+} from '@tldraw/tldraw'
+import { useCallback, useMemo, useRef, useState } from 'react'
+
+import iconSpriteUrl from '../whiteboard/assets/0_merged.svg?url'
+import monoBoldUrl from '../whiteboard/assets/fonts/IBMPlexMono-Bold.woff2?url'
+import monoBoldItalicUrl from '../whiteboard/assets/fonts/IBMPlexMono-BoldItalic.woff2?url'
+import monoUrl from '../whiteboard/assets/fonts/IBMPlexMono-Medium.woff2?url'
+import monoItalicUrl from '../whiteboard/assets/fonts/IBMPlexMono-MediumItalic.woff2?url'
+import sansBoldUrl from '../whiteboard/assets/fonts/IBMPlexSans-Bold.woff2?url'
+import sansBoldItalicUrl from '../whiteboard/assets/fonts/IBMPlexSans-BoldItalic.woff2?url'
+import sansUrl from '../whiteboard/assets/fonts/IBMPlexSans-Medium.woff2?url'
+import sansItalicUrl from '../whiteboard/assets/fonts/IBMPlexSans-MediumItalic.woff2?url'
+import serifBoldUrl from '../whiteboard/assets/fonts/IBMPlexSerif-Bold.woff2?url'
+import serifBoldItalicUrl from '../whiteboard/assets/fonts/IBMPlexSerif-BoldItalic.woff2?url'
+import serifUrl from '../whiteboard/assets/fonts/IBMPlexSerif-Medium.woff2?url'
+import serifItalicUrl from '../whiteboard/assets/fonts/IBMPlexSerif-MediumItalic.woff2?url'
+import drawBoldUrl from '../whiteboard/assets/fonts/Shantell_Sans-Informal_Bold.woff2?url'
+import drawBoldItalicUrl from '../whiteboard/assets/fonts/Shantell_Sans-Informal_Bold_Italic.woff2?url'
+import drawUrl from '../whiteboard/assets/fonts/Shantell_Sans-Informal_Regular.woff2?url'
+import drawItalicUrl from '../whiteboard/assets/fonts/Shantell_Sans-Informal_Regular_Italic.woff2?url'
+import { useIsDark } from '../whiteboard/use-is-dark'
+
+const OFFLINE_FONTS: TLEditorAssetUrls['fonts'] = {
+  tldraw_mono: monoUrl,
+  tldraw_mono_italic: monoItalicUrl,
+  tldraw_mono_bold: monoBoldUrl,
+  tldraw_mono_italic_bold: monoBoldItalicUrl,
+  tldraw_serif: serifUrl,
+  tldraw_serif_italic: serifItalicUrl,
+  tldraw_serif_bold: serifBoldUrl,
+  tldraw_serif_italic_bold: serifBoldItalicUrl,
+  tldraw_sans: sansUrl,
+  tldraw_sans_italic: sansItalicUrl,
+  tldraw_sans_bold: sansBoldUrl,
+  tldraw_sans_italic_bold: sansBoldItalicUrl,
+  tldraw_draw: drawUrl,
+  tldraw_draw_italic: drawItalicUrl,
+  tldraw_draw_bold: drawBoldUrl,
+  tldraw_draw_italic_bold: drawBoldItalicUrl
+}
+
+const OFFLINE_ICONS: Record<string, string> = Object.fromEntries(
+  iconTypes.map(name => [name, `${iconSpriteUrl}#${name}`])
+)
+
+const ASSET_URLS = { fonts: OFFLINE_FONTS, icons: OFFLINE_ICONS }
+
+// ── Data model (matches backend GraphNode / GraphEdge) ──────────────────────
 
 export interface GraphNode {
   id: string
@@ -38,142 +97,161 @@ export interface GraphData {
   edges: GraphEdge[]
 }
 
-const NODE_COLORS: Record<string, string> = {
-  workspace: '#8b5cf6',
-  roadmap: '#3b82f6',
-  milestone: '#10b981',
-  task: '#f59e0b',
-  adr: '#ef4444',
-  journal: '#ec4899',
+// ── Layout ──────────────────────────────────────────────────────────────────
+// Deterministic layered layout: projects (left) → milestones (middle) →
+// tasks / ADRs / journals (right). Columns are stacked vertically with a
+// fixed gap; edges are drawn as tldraw arrows between the box centres.
+
+const COLUMN_X = { project: 0, milestone: 440, task: 880 }
+const COLUMN_ORDER = ['project', 'milestone', 'task'] as const
+
+function classify(type: string): 'project' | 'milestone' | 'task' {
+  if (type === 'workspace' || type === 'roadmap') return 'project'
+  if (type === 'milestone') return 'milestone'
+  return 'task'
 }
 
-const NODE_RADIUS: Record<string, number> = {
-  workspace: 22,
-  roadmap: 14,
-  milestone: 10,
-  task: 7,
-  adr: 8,
-  journal: 8,
+const NODE_COLORS: Record<string, TLDefaultColorStyle> = {
+  project: 'violet',
+  milestone: 'light-green',
+  task: 'orange'
 }
+
+const BOX_WIDTH = 360
+const BOX_HEIGHT = 60
+const VERTICAL_GAP = 28
+
+function computePositions(
+  nodes: GraphNode[]
+): Map<string, { x: number; y: number; col: 'project' | 'milestone' | 'task' }> {
+  const buckets: Record<'project' | 'milestone' | 'task', GraphNode[]> = {
+    project: [],
+    milestone: [],
+    task: []
+  }
+  for (const n of nodes) buckets[classify(n.type)].push(n)
+
+  const positions = new Map<string, { x: number; y: number; col: 'project' | 'milestone' | 'task' }>()
+  for (const col of COLUMN_ORDER) {
+    let y = 0
+    for (const n of buckets[col]) {
+      positions.set(n.id, {
+        x: COLUMN_X[col] + BOX_WIDTH / 2,
+        y: y + BOX_HEIGHT / 2,
+        col
+      })
+      y += BOX_HEIGHT + VERTICAL_GAP
+    }
+  }
+  return positions
+}
+
+// ── Shape insertion (on editor mount) ───────────────────────────────────────
+
+function buildGraph(editor: Editor, data: GraphData) {
+  const positions = computePositions(data.nodes)
+
+  const shapes: TLCreateShapePartial[] = []
+
+  for (const n of data.nodes) {
+    const p = positions.get(n.id)
+    if (!p) continue
+    const color = NODE_COLORS[p.col]
+    const label = n.title.length > 42 ? `${n.title.slice(0, 40)}…` : n.title
+    shapes.push({
+      id: createShapeId(`node-${n.id}`),
+      type: 'geo',
+      x: p.x - BOX_WIDTH / 2,
+      y: p.y - BOX_HEIGHT / 2,
+      props: {
+        geo: 'rectangle',
+        w: BOX_WIDTH,
+        h: BOX_HEIGHT,
+        color,
+        fill: 'solid',
+        size: 'm'
+      }
+    })
+    // Label as a separate text shape centred on the box.
+    shapes.push({
+      id: createShapeId(`label-${n.id}`),
+      type: 'text',
+      x: p.x - BOX_WIDTH / 2 + 8,
+      y: p.y - BOX_HEIGHT / 2 + 8,
+      props: {
+        richText: toRichText(label),
+        color: 'black',
+        size: 's',
+        w: BOX_WIDTH - 16,
+        autoSize: true
+      }
+    })
+  }
+
+  for (const e of data.edges) {
+    const a = positions.get(e.source_id)
+    const b = positions.get(e.target_id)
+    if (!a || !b) continue
+    shapes.push({
+      id: createShapeId(`edge-${e.source_id}-${e.target_id}`),
+      type: 'arrow',
+      x: a.x,
+      y: a.y,
+      props: {
+        color: 'grey',
+        size: 's',
+        start: { x: a.x, y: a.y },
+        end: { x: b.x, y: b.y }
+      }
+    })
+  }
+
+  editor.createShapes(shapes)
+  editor.zoomToFit({ animation: { duration: 0 } })
+}
+
+// ── Page ────────────────────────────────────────────────────────────────────
 
 export function GraphPage({ ctx }: { ctx: PluginContext }) {
-  const svgRef = useRef<SVGSVGElement | null>(null)
-  const wrapRef = useRef<HTMLDivElement | null>(null)
-  const [selected, setSelected] = useState<GraphNode | null>(null)
-
+  const isDark = useIsDark()
   const { data, isLoading, error } = useQuery<GraphData>({
     queryKey: ['workspace', 'graph'],
     queryFn: () => ctx.rest<GraphData>('/v1/graph'),
-    refetchInterval: 30000,
+    refetchInterval: 30000
   })
 
-  const nodes = useMemo(() => data?.nodes ?? [], [data])
-  const edges = useMemo(() => data?.edges ?? [], [data])
+  const nodes = data?.nodes ?? []
+  const edges = data?.edges ?? []
 
-  // d3-force layout + render
-  useEffect(() => {
-    const svg = svgRef.current
-    const wrap = wrapRef.current
-    if (!svg || !wrap || nodes.length === 0) return
+  const store = useMemo<TLStore>(() => createTLStore(), [])
+  const [builtFor, setBuiltFor] = useState<string>('')
 
-    const width = wrap.clientWidth
-    const height = wrap.clientHeight || 480
+  // (Re)build the graph when the data changes (e.g. 30s polling picks up a
+  // new milestone/task). We track the shape ids we inserted so a rebuild can
+  // clear them first.
+  const shapeIdsRef = useRef<TLShapeId[]>([])
 
-    // Clear previous render
-    while (svg.firstChild) svg.removeChild(svg.firstChild)
-
-    const nodeMap = new Map(nodes.map((n) => [n.id, n]))
-
-    const simulation = d3
-      .forceSimulation(nodes as unknown as d3.SimulationNodeDatum[])
-      .force(
-        'link',
-        d3
-          .forceLink(
-            edges.map((e) => ({
-              source: e.source_id,
-              target: e.target_id,
-            })) as unknown as d3.SimulationLinkDatum<d3.SimulationNodeDatum>[]
-          )
-          .id((d: any) => d.id)
-          .distance(60)
-      )
-      .force('charge', d3.forceManyBody().strength(-220))
-      .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collide', d3.forceCollide(24))
-
-    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g')
-
-    const link = document.createElementNS('http://www.w3.org/2000/svg', 'g')
-    edges.forEach(() => {
-      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line')
-      line.setAttribute('stroke', '#4b5563')
-      line.setAttribute('stroke-width', '1')
-      line.setAttribute('stroke-opacity', '0.5')
-      link.appendChild(line)
-    })
-    g.appendChild(link)
-
-    const node = document.createElementNS('http://www.w3.org/2000/svg', 'g')
-    const nodeEls: SVGCircleElement[] = []
-    nodes.forEach((n) => {
-      const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle')
-      circle.setAttribute('r', String(NODE_RADIUS[n.type] ?? 8))
-      circle.setAttribute('fill', NODE_COLORS[n.type] ?? '#6b7280')
-      circle.setAttribute('fill-opacity', '0.85')
-      circle.setAttribute('stroke', '#fff')
-      circle.setAttribute('stroke-width', '1.5')
-      circle.style.cursor = 'pointer'
-      circle.addEventListener('click', () => setSelected(n))
-      node.appendChild(circle)
-      nodeEls.push(circle)
-    })
-    g.appendChild(node)
-
-    const label = document.createElementNS('http://www.w3.org/2000/svg', 'g')
-    const labelEls: SVGTextElement[] = []
-    nodes.forEach((n) => {
-      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text')
-      text.setAttribute('fill', '#d1d5db')
-      text.setAttribute('font-size', '9')
-      text.setAttribute('text-anchor', 'middle')
-      text.setAttribute('dy', '-12')
-      text.textContent = n.title.length > 24 ? n.title.slice(0, 22) + '…' : n.title
-      label.appendChild(text)
-      labelEls.push(text)
-    })
-    g.appendChild(label)
-
-    svg.appendChild(g)
-    svg.setAttribute('width', String(width))
-    svg.setAttribute('height', String(height))
-
-    const linkEls = Array.from(link.children) as SVGLineElement[]
-    simulation.on('tick', () => {
-      linkEls.forEach((line, i) => {
-        const l = (simulation.force('link') as any)?.links?.()?.[i]
-        if (!l) return
-        line.setAttribute('x1', l.source.x)
-        line.setAttribute('y1', l.source.y)
-        line.setAttribute('x2', l.target.x)
-        line.setAttribute('y2', l.target.y)
-      })
-      nodeEls.forEach((circle, i) => {
-        const n = nodes[i] as any
-        circle.setAttribute('cx', n.x)
-        circle.setAttribute('cy', n.y)
-      })
-      labelEls.forEach((text, i) => {
-        const n = nodes[i] as any
-        text.setAttribute('x', n.x)
-        text.setAttribute('y', n.y)
-      })
-    })
-
-    return () => {
-      simulation.stop()
-    }
-  }, [nodes, edges])
+  const onMount = useCallback(
+    (editor: Editor) => {
+      const key = `${nodes.length}:${edges.length}`
+      if (builtFor !== key && nodes.length > 0) {
+        // Clear any previously-inserted shapes before rebuilding.
+        if (shapeIdsRef.current.length > 0) {
+          editor.deleteShapes(shapeIdsRef.current)
+        }
+        const before = new Set(
+          Array.from(editor.getCurrentPageShapes()).map(s => s.id)
+        )
+        buildGraph(editor, { nodes, edges })
+        const after = new Set(
+          Array.from(editor.getCurrentPageShapes()).map(s => s.id)
+        )
+        shapeIdsRef.current = Array.from(after).filter(id => !before.has(id))
+        setBuiltFor(key)
+      }
+    },
+    [builtFor, nodes, edges]
+  )
 
   if (isLoading) return <Loader label="Loading knowledge graph…" />
   if (error) return <ErrorState title="Couldn't load the knowledge graph" description={String(error)} />
@@ -188,30 +266,18 @@ export function GraphPage({ ctx }: { ctx: PluginContext }) {
         <div>
           <h2 className="text-lg font-semibold">Knowledge Graph</h2>
           <p className="text-sm text-gray-400">
-            {nodes.length} nodes · {edges.length} edges — workspace, roadmaps, milestones,
-            tasks, ADRs, journals
+            {nodes.length} nodes · {edges.length} edges — projects, milestones, tasks
           </p>
         </div>
-        {selected && (
-          <div className="rounded-md border border-gray-700 bg-gray-900 px-3 py-2 text-xs">
-            <span className="font-medium">{selected.title}</span>
-            <span className="ml-2 text-gray-400">({selected.type})</span>
-            {selected.status && <span className="ml-2 text-gray-500">· {selected.status}</span>}
-          </div>
-        )}
       </div>
 
-      <div ref={wrapRef} className="min-h-[480px] flex-1 overflow-hidden rounded-lg border border-gray-800">
-        <svg ref={svgRef} className="h-full w-full" />
-      </div>
-
-      <div className="flex flex-wrap gap-3 text-xs text-gray-400">
-        {Object.entries(NODE_COLORS).map(([type, color]) => (
-          <span key={type} className="inline-flex items-center gap-1.5">
-            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: color }} />
-            {type}
-          </span>
-        ))}
+      <div className="min-h-[480px] flex-1 overflow-hidden rounded-lg border border-gray-800">
+        <Tldraw
+          assetUrls={ASSET_URLS}
+          colorScheme={isDark ? 'dark' : 'light'}
+          store={store}
+          onMount={onMount}
+        />
       </div>
     </div>
   )
