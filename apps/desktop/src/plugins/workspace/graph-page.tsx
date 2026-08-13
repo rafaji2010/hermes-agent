@@ -1,11 +1,10 @@
 /**
- * Graph Page — projects → milestones → tasks, drawn Excalidraw-style.
+ * Graph Page — projects → milestones → tasks, drawn Excalidraw-style as a TREE.
  *
- * A deliberately simple, dependency-free SVG diagram. No tldraw editor, no
- * d3-force, no physics, no asset files — just a deterministic three-column
- * layout (projects | milestones | tasks) with hand-drawn boxes and arrows in
- * Excalidraw's palette. This replaces the earlier d3-force and tldraw-editor
- * attempts, both of which were fragile for a read-only overview.
+ * Mirrors the user's whiteboard sample: a project (roadmap) box sits at the
+ * root; its milestones hang below it as children; tasks (or milestone
+ * sub-items) hang below each milestone as grandchildren. Deterministic,
+ * dependency-free SVG — no tldraw editor, no d3-force, no physics.
  *
  * Scope: like every workspace surface, this page resolves the project scope
  * via `useWorkspaceScope` and passes `workspace_id` on the `/v1/graph` query
@@ -39,22 +38,12 @@ export interface GraphData {
   edges: GraphEdge[]
 }
 
-type Column = 'project' | 'milestone' | 'task'
-
-function classify(type: string): Column {
-  if (type === 'workspace' || type === 'roadmap') return 'project'
-  if (type === 'milestone') return 'milestone'
-  return 'task'
-}
-
-// Excalidraw pastel palette (fill + hand-drawn stroke).
-const COLUMN_STYLE: Record<Column, { fill: string; stroke: string; label: string }> = {
+// Excalidraw pastel palette (fill + hand-drawn stroke) per level.
+const LEVEL_STYLE: Record<string, { fill: string; stroke: string; label: string }> = {
   project: { fill: '#a5d8ff', stroke: '#1e6eb5', label: 'Projects' },
   milestone: { fill: '#b2f2bb', stroke: '#2b8a3e', label: 'Milestones' },
   task: { fill: '#ffd8a8', stroke: '#e8590c', label: 'Tasks' }
 }
-
-const COLUMN_ORDER: Column[] = ['project', 'milestone', 'task']
 
 const BOX_W = 240
 const BOX_H = 64
@@ -65,33 +54,88 @@ const PAD_Y = 40
 
 interface Placed {
   node: GraphNode
-  col: Column
+  level: 'project' | 'milestone' | 'task'
   x: number
   y: number
 }
 
-function layout(nodes: GraphNode[]) {
-  const buckets: Record<Column, GraphNode[]> = { project: [], milestone: [], task: [] }
-  for (const n of nodes) buckets[classify(n.type)].push(n)
+function classify(type: string): 'project' | 'milestone' | 'task' {
+  if (type === 'workspace' || type === 'roadmap') return 'project'
+  if (type === 'milestone') return 'milestone'
+  return 'task'
+}
 
-  const placed: Placed[] = []
-  const byId = new Map<string, Placed>()
-
-  let colX = PAD_X
-  let maxHeight = 0
-  for (const col of COLUMN_ORDER) {
-    let y = PAD_Y
-    for (const n of buckets[col]) {
-      const p: Placed = { node: n, col, x: colX, y }
-      placed.push(p)
-      byId.set(n.id, p)
-      y += BOX_H + ROW_GAP
-    }
-    maxHeight = Math.max(maxHeight, y)
-    colX += BOX_W + COL_GAP
+/**
+ * Tree layout: workspace is hidden; roadmaps (projects) are roots; their
+ * milestones are children (via reversed `milestone_of` edges); tasks are
+ * grandchildren (via reversed `belongs_to` edges, or attached to the project
+ * when a milestone link is absent). Columns: projects | milestones | tasks.
+ */
+function layout(nodes: GraphNode[], edges: GraphEdge[]) {
+  const nodeById = new Map(nodes.map(n => [n.id, n]))
+  // Reverse edges into child lists.
+  const children = new Map<string, { id: string; rel: string }[]>()
+  for (const e of edges) {
+    const list = children.get(e.target_id) ?? []
+    list.push({ id: e.source_id, rel: e.relationship })
+    children.set(e.target_id, list)
   }
 
-  return { placed, byId, width: colX + PAD_X, height: maxHeight + PAD_Y }
+  // Roots: roadmaps (projects). Exclude the workspace node itself.
+  const roots = nodes.filter(n => n.type === 'roadmap' || n.type === 'workspace')
+
+  const placed: Placed[] = []
+  const placedByLevel: Record<string, Placed[]> = { project: [], milestone: [], task: [] }
+  const seen = new Set<string>()
+  const byId = new Map<string, Placed>()
+
+  // Column X positions.
+  const colX: Record<string, number> = {
+    project: PAD_X,
+    milestone: PAD_X + BOX_W + COL_GAP,
+    task: PAD_X + 2 * (BOX_W + COL_GAP)
+  }
+  const maxY: Record<string, number> = { project: PAD_Y, milestone: PAD_Y, task: PAD_Y }
+
+  // Assign a node to its level column at the next free Y.
+  const place = (n: GraphNode, level: 'project' | 'milestone' | 'task'): Placed => {
+    const p: Placed = { node: n, level, x: colX[level], y: maxY[level] }
+    placed.push(p)
+    placedByLevel[level].push(p)
+    byId.set(n.id, p)
+    maxY[level] += BOX_H + ROW_GAP
+    seen.add(n.id)
+    return p
+  }
+
+  // Recursive: place node at `level`, then its children at level+1.
+  const walk = (n: GraphNode, level: 'project' | 'milestone' | 'task') => {
+    if (seen.has(n.id)) return
+    const p = place(n, level)
+    const kids = children.get(n.id) ?? []
+    const nextLevel =
+      level === 'project' ? 'milestone' : level === 'milestone' ? 'task' : 'task'
+    for (const kid of kids) {
+      const kn = nodeById.get(kid.id)
+      if (kn && !seen.has(kn.id)) walk(kn, nextLevel)
+    }
+    return p
+  }
+
+  for (const r of roots) {
+    if (r.type === 'workspace') continue // hide the workspace wrapper
+    walk(r, 'project')
+  }
+
+  // Orphan milestones/tasks (no roadmap edge) — attach to a fallback column.
+  for (const n of nodes) {
+    if (seen.has(n.id)) continue
+    walk(n, classify(n.type))
+  }
+
+  const width = colX.task + BOX_W + PAD_X
+  const height = Math.max(maxY.project, maxY.milestone, maxY.task) + PAD_Y
+  return { placed, byId, width, height }
 }
 
 function truncate(s: string, n: number) {
@@ -112,7 +156,7 @@ export function GraphPage({ ctx }: { ctx: PluginContext }) {
   const nodes = data?.nodes ?? []
   const edges = data?.edges ?? []
 
-  const { placed, byId, width, height } = useMemo(() => layout(nodes), [nodes])
+  const { placed, byId, width, height } = useMemo(() => layout(nodes, edges), [nodes, edges])
 
   if (!ws) {
     return <WorkspaceScopeNotice ctx={ctx} scope={scope} />
@@ -160,14 +204,17 @@ export function GraphPage({ ctx }: { ctx: PluginContext }) {
               <path d="M 0 0 L 10 5 L 0 10 z" fill="#868e96" />
             </marker>
           </defs>
-          {/* Edges: subtle curved arrows from source right-edge to target left-edge. */}
+          {/* Edges: curved arrows — for tree edges, connect parent bottom to child top. */}
           {drawnEdges.map(e => {
             const a = byId.get(e.source_id)!
             const b = byId.get(e.target_id)!
-            const x1 = a.x + BOX_W
-            const y1 = a.y + BOX_H / 2
-            const x2 = b.x
-            const y2 = b.y + BOX_H / 2
+            // If both are placed, draw from parent bottom-center to child top-center
+            // when a is a parent level (project/milestone); else right-edge to left-edge.
+            const parentOf = a.level === 'project' || a.level === 'milestone'
+            const x1 = parentOf ? a.x + BOX_W / 2 : a.x + BOX_W
+            const y1 = parentOf ? a.y + BOX_H : a.y + BOX_H / 2
+            const x2 = parentOf ? b.x + BOX_W / 2 : b.x
+            const y2 = parentOf ? b.y : b.y + BOX_H / 2
             const mx = (x1 + x2) / 2
             return (
               <path
@@ -183,7 +230,7 @@ export function GraphPage({ ctx }: { ctx: PluginContext }) {
 
           {/* Nodes: hand-drawn boxes with pastel fill + bound label. */}
           {placed.map(p => {
-            const st = COLUMN_STYLE[p.col]
+            const st = LEVEL_STYLE[p.level]
             return (
               <g key={p.node.id}>
                 <rect
@@ -215,13 +262,13 @@ export function GraphPage({ ctx }: { ctx: PluginContext }) {
 
       {/* Legend */}
       <div className="flex flex-wrap gap-4 text-xs text-gray-400">
-        {COLUMN_ORDER.map(col => (
-          <span key={col} className="inline-flex items-center gap-1.5">
+        {(['project', 'milestone', 'task'] as const).map(level => (
+          <span key={level} className="inline-flex items-center gap-1.5">
             <span
               className="inline-block h-3 w-3 rounded-sm"
-              style={{ background: COLUMN_STYLE[col].fill, border: `1px solid ${COLUMN_STYLE[col].stroke}` }}
+              style={{ background: LEVEL_STYLE[level].fill, border: `1px solid ${LEVEL_STYLE[level].stroke}` }}
             />
-            {COLUMN_STYLE[col].label}
+            {LEVEL_STYLE[level].label}
           </span>
         ))}
       </div>
