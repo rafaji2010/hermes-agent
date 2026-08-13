@@ -68,7 +68,6 @@ export const ga: Translations = {
     },
     nav: {
       analytics: "Anailís",
-      usage: "Usage",
       chat: "Comhrá",
       config: "Cumraíocht",
       cron: "Cron",

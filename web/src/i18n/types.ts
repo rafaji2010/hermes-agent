@@ -89,7 +89,6 @@ export interface Translations {
     };
     nav: {
       analytics: string;
-      usage: string;
       chat: string;
       config: string;
       cron: string;

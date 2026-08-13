@@ -68,7 +68,6 @@ export const ru: Translations = {
     },
     nav: {
       analytics: "Аналитика",
-      usage: "Usage",
       chat: "Чат",
       config: "Конфигурация",
       cron: "Cron",
