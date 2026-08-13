@@ -7,9 +7,14 @@ yes/no verdict BEFORE the cloud smart-approval LLM is consulted.
 Backends (in preference order, all local):
   1. **Ollama** — the machine's existing local-inference substrate. A
      Shieldstral 3B model is served under a configured tag (default
-     ``hf.co/Metabaron6/Shieldstral-1.0-3B-GGUF:Q4_K_M`` — pulled from the
-     HuggingFace GGUF repo via Ollama's ``hf.co/...`` namespace) and queried
-     via the ``/api/generate`` endpoint.
+     ``shieldstral-text``) and queried via the ``/api/generate`` endpoint.
+
+     PITFALL: Shieldstral is multimodal (it ships a CLIP projector), and
+     Ollama's auto-generated Modelfile for ``hf.co/.../Shieldstral-1.0-3B-GGUF:Q4_K_M``
+     bundles a broken second ``FROM`` blob, crashing llama-server with
+     "Failed to load CLIP model". Build a text-only model instead:
+     ``ollama show <tag> --modelfile``, keep only the FIRST ``FROM`` blob,
+     and ``ollama create shieldstral-text -f <modelfile>``.
   2. **llama.cpp** — a GGUF file (``Shieldstral-1.0-3B-Q4_K_M.gguf``,
      ~2.15 GB, from ``Metabaron6/Shieldstral-1.0-3B-GGUF``) loaded via
      ``llama_cpp`` if installed. Used when Ollama is absent.

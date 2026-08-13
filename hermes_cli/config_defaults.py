@@ -2167,7 +2167,7 @@ DEFAULT_CONFIG = {
         "shieldstral": {
             "enabled": False,
             "backend": "auto",
-            "ollama_model": "hf.co/Metabaron6/Shieldstral-1.0-3B-GGUF:Q4_K_M",
+            "ollama_model": "shieldstral-text",
             "ollama_url": "http://127.0.0.1:11434",
             "gguf_path": "~/.hermes/models/Shieldstral-1.0-3B-Q4_K_M.gguf",
             "timeout": 5,
