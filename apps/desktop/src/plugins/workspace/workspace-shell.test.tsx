@@ -11,6 +11,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
+import { $workspaceScope } from './scope'
 import { $workspaceTab, WORKSPACE_TABS, WorkspaceShell } from './workspace-shell'
 
 function renderShell(ctx: PluginContext) {
@@ -28,7 +29,7 @@ function renderShell(ctx: PluginContext) {
 function fakeCtx(): PluginContext {
   return {
     rest: async (path: string) => {
-      if (path === '/v1/graph') {
+      if (path.startsWith('/v1/graph')) {
         return {
           nodes: [{ id: 'w1', type: 'workspace', title: 'Test Workspace', status: '' }],
           edges: [],
@@ -114,6 +115,17 @@ describe('WorkspaceShell', () => {
   })
 
   it('switches to the graph surface through the internal tab atom', async () => {
+    $workspaceScope.set({
+      state: 'scoped',
+      workspaceId: 'ws-graph-test',
+      projectId: null,
+      projectSlug: null,
+      matchSource: 'mapping',
+      cwd: '/tmp',
+      profile: 'default',
+      error: '',
+      retrying: false,
+    })
     $workspaceTab.set('graph')
     renderShell(fakeCtx())
 
