@@ -1,0 +1,12 @@
+# Hermes Mobile — local ignores
+node_modules/
+*.log
+
+# Android / Gradle
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/local.properties
+mobile/android/.idea/
+mobile/android/.kotlin/
+mobile/android/*.iml

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.HermesMobile" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:colorPrimary">@color/hermes_gold</item>
+        <item name="android:colorPrimaryDark">@color/hermes_background</item>
+        <item name="android:colorAccent">@color/hermes_gold</item>
+        <item name="android:windowBackground">@color/hermes_background</item>
+        <item name="android:statusBarColor">@color/hermes_background</item>
+        <item name="android:textColorPrimary">@color/hermes_foreground</item>
+    </style>
+</resources>
