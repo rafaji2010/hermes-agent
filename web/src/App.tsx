@@ -525,7 +525,7 @@ export default function App() {
 
       <header
         className={cn(
-          "min-[880px]:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
+          "min-[720px]:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
           "flex items-center gap-2 px-4 py-2",
           "border-b border-current/20",
           "bg-background-base",
@@ -559,7 +559,7 @@ export default function App() {
           aria-label={t.app.closeNavigation}
           onClick={closeMobile}
           className={cn(
-            "min-[880px]:hidden fixed inset-0 z-40 p-0 block",
+            "min-[720px]:hidden fixed inset-0 z-40 p-0 block",
             "bg-black/70",
           )}
         />
@@ -568,7 +568,7 @@ export default function App() {
       <PluginSlot name="header-banner" />
       <ProfileScopeBanner />
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 min-[880px]:pt-0">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 min-[720px]:pt-0">
         <div className="flex min-h-0 min-w-0 flex-1">
           <aside
             id="app-sidebar"
@@ -579,9 +579,9 @@ export default function App() {
               "bg-background-base",
               "transition-[transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]",
               mobileOpen ? "translate-x-0" : "-translate-x-full",
-              "min-[880px]:sticky min-[880px]:top-0 min-[880px]:translate-x-0 min-[880px]:shrink-0 min-[880px]:overflow-hidden",
-              "min-[880px]:transition-[width] min-[880px]:duration-300 min-[880px]:ease-[cubic-bezier(0.23,1,0.32,1)]",
-              collapsed && "min-[880px]:w-14",
+              "min-[720px]:sticky min-[720px]:top-0 min-[720px]:translate-x-0 min-[720px]:shrink-0 min-[720px]:overflow-hidden",
+              "min-[720px]:transition-[width] min-[720px]:duration-300 min-[720px]:ease-[cubic-bezier(0.23,1,0.32,1)]",
+              collapsed && "min-[720px]:w-14",
             )}
             style={{
               background: "var(--component-sidebar-background)",
@@ -593,13 +593,13 @@ export default function App() {
               className={cn(
                 "flex h-14 shrink-0 items-center gap-2",
                 "border-b border-current/20",
-                collapsed ? "min-[880px]:justify-center min-[880px]:px-0" : "px-4 justify-between",
+                collapsed ? "min-[720px]:justify-center min-[720px]:px-0" : "px-4 justify-between",
               )}
             >
               <div
                 className={cn(
                   "flex items-center gap-2",
-                  collapsed && "min-[880px]:hidden",
+                  collapsed && "min-[720px]:hidden",
                 )}
               >
                 <PluginSlot name="header-left" />
@@ -616,7 +616,7 @@ export default function App() {
                 size="icon"
                 onClick={closeMobile}
                 aria-label={t.app.closeNavigation}
-                className="min-[880px]:hidden text-text-secondary hover:text-midground"
+                className="min-[720px]:hidden text-text-secondary hover:text-midground"
               >
                 <X />
               </Button>
@@ -628,7 +628,7 @@ export default function App() {
                 aria-label={
                   collapsed ? t.common.expand : t.common.collapse
                 }
-                className="hidden min-[880px]:flex text-text-secondary hover:text-midground"
+                className="hidden min-[720px]:flex text-text-secondary hover:text-midground"
               >
                 {collapsed ? (
                   <PanelLeftOpen className="h-4 w-4" />
@@ -667,7 +667,7 @@ export default function App() {
                     className={cn(
                       "px-5 pt-2.5 pb-1",
                       "font-sans text-display text-xs tracking-[0.12em] text-text-tertiary",
-                      isDesktopCollapsed && "min-[880px]:hidden",
+                      isDesktopCollapsed && "min-[720px]:hidden",
                     )}
                     id="hermes-sidebar-plugin-nav-heading"
                   >
@@ -703,14 +703,14 @@ export default function App() {
                 "px-3 py-2",
                 "border-t border-current/20",
                 isDesktopCollapsed
-                  ? "min-[880px]:flex-col min-[880px]:items-start min-[880px]:gap-3 min-[880px]:py-3"
+                  ? "min-[720px]:flex-col min-[720px]:items-start min-[720px]:gap-3 min-[720px]:py-3"
                   : "justify-between",
               )}
             >
               <div
                 className={cn(
                   "flex min-w-0 items-center gap-2",
-                  isDesktopCollapsed && "min-[880px]:flex-col min-[880px]:items-start",
+                  isDesktopCollapsed && "min-[720px]:flex-col min-[720px]:items-start",
                 )}
               >
                 <PluginSlot name="header-right" />
@@ -736,7 +736,7 @@ export default function App() {
             <div
               className={cn(
                 "flex shrink-0 flex-col",
-                isDesktopCollapsed && "min-[880px]:hidden",
+                isDesktopCollapsed && "min-[720px]:hidden",
               )}
             >
               <AuthWidget />
@@ -750,8 +750,8 @@ export default function App() {
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
                 "px-3 sm:px-6",
                 isChatRoute
-                  ? "pb-0 pt-1 sm:pt-2 min-[880px]:pt-4"
-                  : "pt-2 sm:pt-4 min-[880px]:pt-6",
+                  ? "pb-0 pt-1 sm:pt-2 min-[720px]:pt-4"
+                  : "pt-2 sm:pt-4 min-[720px]:pt-6",
                 isDocsRoute && "min-h-0 flex-1",
               )}
             >
@@ -760,7 +760,7 @@ export default function App() {
                 className={cn(
                   "w-full min-w-0",
                   !isChatRoute &&
-                    "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] min-[880px]:pb-8",
+                    "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] min-[720px]:pb-8",
                   (isDocsRoute || isChatRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
@@ -895,7 +895,7 @@ function SidebarNavLink({
             <span
               className={cn(
                 "truncate transition-opacity duration-300",
-                collapsed ? "min-[880px]:opacity-0" : "min-[880px]:opacity-100",
+                collapsed ? "min-[720px]:opacity-0" : "min-[720px]:opacity-100",
               )}
             >
               {navLabel}
@@ -1037,13 +1037,13 @@ function SidebarSystemActions({
         className={cn(
           "px-5 pt-0.5 pb-0.5",
           "font-sans text-display text-xs tracking-[0.12em] text-text-tertiary",
-          collapsed && "min-[880px]:hidden",
+          collapsed && "min-[720px]:hidden",
         )}
       >
         {t.app.system}
       </span>
 
-      <div className={cn(collapsed && "min-[880px]:hidden")}>
+      <div className={cn(collapsed && "min-[720px]:hidden")}>
         <SidebarStatusStrip status={status} />
       </div>
 
@@ -1160,7 +1160,7 @@ function SystemActionButton({
 
         <span className={cn(
           "truncate transition-opacity duration-300",
-          collapsed ? "min-[880px]:opacity-0" : "min-[880px]:opacity-100",
+          collapsed ? "min-[720px]:opacity-0" : "min-[720px]:opacity-100",
         )}>
           {displayLabel}
         </span>
@@ -1216,7 +1216,7 @@ function SidebarIconWithTooltip({
       {collapsed && (
         <span
           aria-hidden
-          className="absolute inset-y-0 inset-x-[-0.375rem] bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover/icon:opacity-5 hidden min-[880px]:block"
+          className="absolute inset-y-0 inset-x-[-0.375rem] bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover/icon:opacity-5 hidden min-[720px]:block"
         />
       )}
 
@@ -1262,8 +1262,8 @@ function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
   return (
     <div
       className={cn(
-        "hidden min-[880px]:flex py-3 pl-[1.625rem] transition-opacity duration-300",
-        collapsed ? "min-[880px]:opacity-100" : "min-[880px]:opacity-0 min-[880px]:h-0 min-[880px]:py-0 min-[880px]:overflow-hidden",
+        "hidden min-[720px]:flex py-3 pl-[1.625rem] transition-opacity duration-300",
+        collapsed ? "min-[720px]:opacity-100" : "min-[720px]:opacity-0 min-[720px]:h-0 min-[720px]:py-0 min-[720px]:overflow-hidden",
       )}
       role="status"
       aria-label={label}
