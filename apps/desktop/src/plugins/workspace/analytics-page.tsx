@@ -22,6 +22,13 @@ import type { ReactNode } from 'react'
 
 import { $trendPeriod } from './analytics'
 import { exportAnalytics, fetchAnalytics, fetchInsights, fetchTrends } from './analytics-api'
+import {
+  ActivityTrendChart,
+  AdrStatusChart,
+  MilestoneStatusChart,
+  TaskPriorityChart,
+  TaskStatusChart,
+} from './analytics-charts'
 import { scopeReady, useWorkspaceScope } from './scope'
 import { WorkspaceScopeNotice } from './scope-notice'
 
@@ -88,25 +95,6 @@ function InsightBadge({ type, title, description }: { type: string; title: strin
     <div className={cn('rounded border p-3', colors[type] || 'bg-gray-500/10 border-gray-500/20')}>
       <div className="text-sm font-medium">{title}</div>
       <div className="text-xs mt-0.5 opacity-80">{description}</div>
-    </div>
-  )
-}
-
-function MiniBar({
-  label,
-  value,
-  max = 100,
-  color = 'bg-green-500',
-}: { label?: string; value: number; max?: number; color?: string }) {
-  const pct = Math.min(100, Math.max(0, (value / max) * 100))
-
-  return (
-    <div className="flex items-center gap-2">
-      {label && <span className="w-24 shrink-0 truncate text-xs text-(--ui-text-tertiary)">{label}</span>}
-      <div className="h-2 flex-1 rounded-full bg-(--ui-bg-quaternary)">
-        <div className={cn('h-2 rounded-full transition-all', color)} style={{ width: `${pct}%` }} />
-      </div>
-      <span className="text-xs text-(--ui-text-tertiary) w-10 text-right">{value}</span>
     </div>
   )
 }
@@ -202,13 +190,6 @@ export function AnalyticsPage({ ctx }: AnalyticsPageProps) {
     )
   }
 
-  const maxTrendVal = trends ? Math.max(
-    ...trends.task_completion.map(p => p.value),
-    ...trends.milestone_completion.map(p => p.value),
-    ...trends.journal_activity.map(p => p.value),
-    1,
-  ) : 1
-
   return (
     <div className="flex h-full flex-col">
       <Contribute area="titleBar.center" id="workspace-analytics:titlebar"><PageTitlebar /></Contribute>
@@ -240,9 +221,11 @@ export function AnalyticsPage({ ctx }: AnalyticsPageProps) {
               </div>
               <StatRow label="Avg Progress" value={`${data.roadmaps.avg_progress}%`} />
               <StatRow label="Milestones" value={data.roadmaps.total_milestones} />
-              <MiniBar color="bg-green-500" label="Completed" value={data.roadmaps.milestones_completed} />
-              <MiniBar color="bg-blue-500" label="In Progress" value={data.roadmaps.milestones_in_progress} />
-              <MiniBar color="bg-red-500" label="Blocked" value={data.roadmaps.milestones_blocked} />
+              <MilestoneStatusChart
+                blocked={data.roadmaps.milestones_blocked}
+                completed={data.roadmaps.milestones_completed}
+                inProgress={data.roadmaps.milestones_in_progress}
+              />
             </Section>
 
             {/* ── Tasks ────────────────────────────────────── */}
@@ -252,11 +235,8 @@ export function AnalyticsPage({ ctx }: AnalyticsPageProps) {
                 <KPI color="text-green-500" label="Completed" value={data.tasks.completed} />
                 <KPI color="text-orange-500" label="Overdue" value={data.tasks.overdue} />
               </div>
-              <div className="space-y-1">
-                {Object.entries(data.tasks.by_status).map(([k, v]) => (
-                  <MiniBar key={k} label={k} max={data.tasks.total} value={v} />
-                ))}
-              </div>
+              <TaskStatusChart byStatus={data.tasks.by_status} />
+              <TaskPriorityChart byPriority={data.tasks.by_priority} />
             </Section>
 
             {/* ── Repositories ─────────────────────────────── */}
@@ -271,9 +251,7 @@ export function AnalyticsPage({ ctx }: AnalyticsPageProps) {
             <Section title="ADRs">
               <StatRow label="Total" value={data.adrs.total} />
               <StatRow label="Recently Added" value={`${data.adrs.recently_added} (30d)`} />
-              {Object.entries(data.adrs.by_status).map(([k, v]) => (
-                <MiniBar key={k} label={k} max={data.adrs.total} value={v} />
-              ))}
+              <AdrStatusChart byStatus={data.adrs.by_status} />
             </Section>
 
             {/* ── Journal ──────────────────────────────────── */}
@@ -305,40 +283,7 @@ export function AnalyticsPage({ ctx }: AnalyticsPageProps) {
                 </Button>
               ))}
             </div>
-            {trends && (
-              <div className="space-y-4">
-                {trends.task_completion.some(p => p.value > 0) && (
-                  <div>
-                    <div className="text-xs text-(--ui-text-tertiary) mb-1">Task Completions</div>
-                    <div className="flex gap-0.5 h-8 items-end">
-                      {trends.task_completion.map((p, i) => (
-                        <div className="flex-1 bg-(--ui-bg-quaternary) relative rounded-t" key={i} title={`${p.date}: ${p.value}`}>
-                          <div
-                            className="absolute bottom-0 left-0 right-0 bg-green-500/60"
-                            style={{ height: `${Math.min(100, (p.value / maxTrendVal) * 100)}%` }}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {trends.journal_activity.some(p => p.value > 0) && (
-                  <div>
-                    <div className="text-xs text-(--ui-text-tertiary) mb-1">Journal Activity</div>
-                    <div className="flex gap-0.5 h-8 items-end">
-                      {trends.journal_activity.map((p, i) => (
-                        <div className="flex-1 bg-(--ui-bg-quaternary) relative rounded-t" key={i} title={`${p.date}: ${p.value}`}>
-                          <div
-                            className="absolute bottom-0 left-0 right-0 bg-blue-500/60"
-                            style={{ height: `${Math.min(100, (p.value / maxTrendVal) * 100)}%` }}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
+            {trends && <ActivityTrendChart trends={trends} />}
           </Section>
 
           {/* ── Insights ───────────────────────────────────── */}
