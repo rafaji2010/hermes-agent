@@ -28,6 +28,12 @@ function renderShell(ctx: PluginContext) {
 function fakeCtx(): PluginContext {
   return {
     rest: async (path: string) => {
+      if (path === '/v1/graph') {
+        return {
+          nodes: [{ id: 'w1', type: 'workspace', title: 'Test Workspace', status: '' }],
+          edges: [],
+        }
+      }
       if (path === '/v1/health') {
         return {
           status: 'ok',
@@ -72,8 +78,6 @@ describe('WORKSPACE_TABS', () => {
       'ADRs',
       'Journal',
       'Roadmaps',
-      'Tasks',
-      'Board',
       'Graph',
       'Search',
       'Analytics',
@@ -96,7 +100,7 @@ describe('WorkspaceShell', () => {
     expect(screen.getByText('ADRs')).toBeTruthy()
     expect(screen.getByText('Journal')).toBeTruthy()
     expect(screen.getByText('Roadmaps')).toBeTruthy()
-    expect(screen.getByText('Tasks')).toBeTruthy()
+    expect(screen.getByText('Graph')).toBeTruthy()
     expect(screen.getByText('Search')).toBeTruthy()
     expect(screen.getByText('Analytics')).toBeTruthy()
     expect(screen.getByText('Assistant')).toBeTruthy()
@@ -109,13 +113,12 @@ describe('WorkspaceShell', () => {
     expect(await screen.findByText('System Healthy')).toBeTruthy()
   })
 
-  it('switches to the tasks surface through the internal tab atom', () => {
-    $workspaceTab.set('tasks')
+  it('switches to the graph surface through the internal tab atom', async () => {
+    $workspaceTab.set('graph')
     renderShell(fakeCtx())
 
-    // Unresolved scope (no sanctioned cwd in the test env) gates the page:
-    // task data is not shown and queries never fall back to global.
-    expect(screen.getByText('No workspace scope resolved — task data is not shown (queries never fall back to global).')).toBeTruthy()
+    // Graph page renders its header once the tab is active (async loader first).
+    expect(await screen.findByText('Knowledge Graph')).toBeTruthy()
   })
 
   it('switches to the ADR surface', () => {
