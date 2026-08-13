@@ -484,6 +484,7 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.subcommands.self_describe import build_self_describe_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -4937,6 +4938,13 @@ def cmd_dump(args):
     run_dump(args)
 
 
+def cmd_self_describe(args):
+    """Emit a machine-readable description of this Hermes instance."""
+    from hermes_cli.self_describe import run_self_describe
+
+    return run_self_describe(args)
+
+
 def cmd_debug(args):
     """Debug tools (share report, etc.)."""
     from hermes_cli.debug import run_debug
@@ -9283,6 +9291,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "webhook",
         "memory",
         "dump",
+        "self-describe",
         "debug",
         "backup",
         "import",
@@ -11734,6 +11743,12 @@ def main():
     # dump command  (parser built in hermes_cli/subcommands/dump.py)
     # =========================================================================
     build_dump_parser(subparsers, cmd_dump=cmd_dump)
+
+    # =========================================================================
+    # self-describe command  (parser built in
+    # hermes_cli/subcommands/self_describe.py)
+    # =========================================================================
+    build_self_describe_parser(subparsers, cmd_self_describe=cmd_self_describe)
 
     # =========================================================================
     # debug command  (parser built in hermes_cli/subcommands/debug.py)
