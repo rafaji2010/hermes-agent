@@ -4076,6 +4076,25 @@ def check_all_command_guards(command: str, env_type: str,
                 return {"approved": True, "message": None,
                         "smart_approved": True, "risk_tier": "auto",
                         "description": combined_desc_for_llm}
+
+        # Shieldstral local guard (M13.2): policy-adaptive local classifier,
+        # consulted BEFORE the cloud smart-approval LLM. Returns None when
+        # disabled / backend missing / errored — fail open, never a hard block
+        # from a broken local model. A True verdict blocks locally with no
+        # cloud call; a False verdict still falls through to the smart LLM
+        # (the deterministic floors above remain the unconditional safety net).
+        try:
+            from tools.shieldstral_guard import shieldstral_verdict
+            shieldstral = shieldstral_verdict(command)
+        except Exception as exc:  # pragma: no cover - fail open on import errors
+            logger.warning("Shieldstral guard unavailable (%s) — pass through", exc)
+            shieldstral = None
+        if shieldstral is True:
+            logger.warning("Shieldstral local guard blocked command: %s", command[:200])
+            return {"approved": False,
+                    "message": "Blocked by the local Shieldstral safety guard.",
+                    "shieldstral": True}
+
         observer_payload = _prepare_smart_approval_observer(
             command=command,
             description=combined_desc_for_llm,

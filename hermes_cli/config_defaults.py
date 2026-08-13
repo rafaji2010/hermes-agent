@@ -2158,6 +2158,20 @@ DEFAULT_CONFIG = {
         #     - glob: "rm -rf /etc*"
         #       action: "deny"
         "risk_tiers": [],
+        # Shieldstral local safety guard (M13.2): policy-adaptive classifier
+        # that scores a command against a natural-language safety policy on
+        # the local machine, BEFORE the cloud smart-approval LLM. Off by
+        # default and fail-open (a backend error yields no verdict, never a
+        # block). Backends: "auto" (Ollama first, then llama.cpp GGUF),
+        # "ollama", or "llamacpp". See tools/shieldstral_guard.py.
+        "shieldstral": {
+            "enabled": False,
+            "backend": "auto",
+            "ollama_model": "hf.co/Metabaron6/Shieldstral-1.0-3B-GGUF:Q4_K_M",
+            "ollama_url": "http://127.0.0.1:11434",
+            "gguf_path": "~/.hermes/models/Shieldstral-1.0-3B-Q4_K_M.gguf",
+            "timeout": 5,
+        },
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates
         # the provider prompt cache (tool schemas are baked into the system
