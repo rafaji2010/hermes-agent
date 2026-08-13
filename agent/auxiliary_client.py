@@ -2735,6 +2735,15 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
 
     or_key = explicit_api_key or _scoped_key_env("OPENROUTER_API_KEY")
     if not or_key:
+        # No key is a CONFIG state, not a payment failure — no request ever
+        # goes out, so nothing was charged. Mark the leg unhealthy briefly so
+        # the chain doesn't re-probe it every call, but say what actually
+        # happened (the generic "payment / credit error" label made users
+        # chase non-existent OpenRouter charges).
+        logger.warning(
+            "Auxiliary client: OpenRouter fallback skipped — no OpenRouter "
+            "API key configured (OPENROUTER_API_KEY unset and no pool entry)."
+        )
         _mark_provider_unhealthy("openrouter", ttl=60)
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
