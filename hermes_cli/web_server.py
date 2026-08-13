@@ -14787,6 +14787,150 @@ async def get_models_analytics(
     return await asyncio.to_thread(_get_models_analytics, days, profile)
 
 
+def _usage_budget_defaults(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, float]:
+    """Budget/limit caps from the ``usage`` config section (USD).
+
+    Missing keys fall back to the reference-plan defaults (a $70/mo plan):
+    monthly cap $70, 5-hour limit $14, weekly limit $35.  These defaults live
+    in ``DEFAULT_CONFIG``; this fallback only guards a hand-edited config that
+    dropped the whole section.
+    """
+    usage_cfg = (cfg or {}).get("usage") or {}
+    try:
+        monthly = float(usage_cfg.get("monthly_cap_usd") or 0.0) or 70.0
+        five_hour = float(usage_cfg.get("five_hour_limit_usd") or 0.0) or 14.0
+        weekly = float(usage_cfg.get("weekly_limit_usd") or 0.0) or 35.0
+    except (TypeError, ValueError):
+        monthly, five_hour, weekly = 70.0, 14.0, 35.0
+    return {"monthly_cap_usd": monthly, "five_hour_limit_usd": five_hour, "weekly_limit_usd": weekly}
+
+
+def _human_delta(seconds: float) -> str:
+    """Compact human duration, e.g. ``2h`` or ``24d 13h``.
+
+    Matches the OpenRouter-style budget panel wording the Usage tab renders.
+    """
+    seconds = max(0, int(seconds))
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h" + (f" {minutes}m" if minutes else "")
+    return f"{minutes}m"
+
+
+def _get_usage_budget(profile: Optional[str] = None) -> Dict[str, Any]:
+    """Budget + limits for the Usage tab's spend-vs-cap / rolling-limit cards.
+
+    Spend is summed over the sessions table (same source as
+    ``_get_usage_analytics``): monthly = current calendar month, 5-hour /
+    weekly = trailing windows ending now.  Caps come from the ``usage``
+    config section (``usage.monthly_cap_usd`` etc.) with documented defaults.
+    """
+    import calendar
+
+    db = _open_session_db_for_profile(profile, read_only=True)
+    try:
+        now = time.time()
+        now_dt = datetime.fromtimestamp(now, tz=timezone.utc)
+        month_start = datetime(now_dt.year, now_dt.month, 1, tzinfo=timezone.utc)
+        month_start_ts = month_start.timestamp()
+        month_end_ts = datetime(
+            now_dt.year, now_dt.month, calendar.monthrange(now_dt.year, now_dt.month)[1],
+            23, 59, 59, tzinfo=timezone.utc,
+        ).timestamp()
+
+        cur = db._conn.execute("""
+            SELECT
+                COALESCE(SUM(estimated_cost_usd), 0) as month_cost,
+                COALESCE(SUM(actual_cost_usd), 0) as month_actual
+            FROM sessions WHERE started_at >= ?
+        """, (month_start_ts,))
+        month_row = dict(cur.fetchone())
+
+        # Rolling-window limits: 5h back and 7d back, ending now.
+        five_hour_cutoff = now - 5 * 3600
+        week_cutoff = now - 7 * 86400
+        cur2 = db._conn.execute("""
+            SELECT
+                SUM(CASE WHEN started_at >= ? THEN COALESCE(estimated_cost_usd, 0) ELSE 0 END) as five_hour_cost,
+                SUM(CASE WHEN started_at >= ? THEN COALESCE(estimated_cost_usd, 0) ELSE 0 END) as week_cost,
+                MIN(CASE WHEN started_at >= ? THEN started_at END) as five_hour_oldest,
+                MIN(CASE WHEN started_at >= ? THEN started_at END) as week_oldest,
+                COUNT(*) as total_runs,
+                SUM(CASE WHEN started_at >= ? THEN 1 ELSE 0 END) as runs_last_24h
+            FROM sessions
+        """, (five_hour_cutoff, week_cutoff, five_hour_cutoff, week_cutoff, now - 86400))
+        window_row = dict(cur2.fetchone())
+
+        with _config_profile_scope(profile):
+            cfg = load_config()
+        caps = _usage_budget_defaults(cfg)
+
+        monthly_spend = float(month_row.get("month_cost") or 0.0)
+        monthly_actual = float(month_row.get("month_actual") or 0.0)
+        five_hour_spend = float(window_row.get("five_hour_cost") or 0.0)
+        weekly_spend = float(window_row.get("week_cost") or 0.0)
+
+        def _pct(used: float, cap: float) -> float:
+            return round(used / cap * 100, 1) if cap > 0 else 0.0
+
+        def _window_resets_in(oldest: Optional[float], window_s: float) -> str:
+            # Rolling window: spend resets when the oldest spend in the window
+            # ages out (oldest_started_at + window_duration).  No spend in the
+            # window → already reset.
+            if not oldest:
+                return "0m"
+            return _human_delta(oldest + window_s - now)
+
+        return {
+            "monthly": {
+                # Prefer real (provider-billed) cost; fall back to estimate.
+                "spend_usd": round(monthly_actual if monthly_actual > 0 else monthly_spend, 2),
+                "cap_usd": caps["monthly_cap_usd"],
+                "period_start": month_start.strftime("%Y-%m-%d"),
+                "period_end": datetime.fromtimestamp(month_end_ts, tz=timezone.utc).strftime("%Y-%m-%d"),
+                "resets_in": _human_delta(month_end_ts - now),
+            },
+            "limits": {
+                "five_hour": {
+                    "used": round(five_hour_spend, 2),
+                    "cap": caps["five_hour_limit_usd"],
+                    "pct": _pct(five_hour_spend, caps["five_hour_limit_usd"]),
+                    "resets_in": _window_resets_in(window_row.get("five_hour_oldest"), 5 * 3600),
+                },
+                "weekly": {
+                    "used": round(weekly_spend, 2),
+                    "cap": caps["weekly_limit_usd"],
+                    "pct": _pct(weekly_spend, caps["weekly_limit_usd"]),
+                    "resets_in": _window_resets_in(window_row.get("week_oldest"), 7 * 86400),
+                },
+            },
+            "runs": {
+                "total": int(window_row.get("total_runs") or 0),
+                "last_24h": int(window_row.get("runs_last_24h") or 0),
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("GET /api/usage/budget failed")
+        raise HTTPException(status_code=500, detail=f"Failed to compute usage budget: {exc}")
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+@app.get("/api/usage/budget")
+async def get_usage_budget(profile: Optional[str] = None):
+    """Budget + limits for the Usage tab (off the event loop)."""
+    return await asyncio.to_thread(_get_usage_budget, profile)
+
+
 # ---------------------------------------------------------------------------
 # /api/pty — PTY-over-WebSocket bridge for the dashboard "Chat" tab.
 #

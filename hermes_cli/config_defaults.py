@@ -3281,6 +3281,18 @@ DEFAULT_CONFIG = {
         "region": "global",
     },
 
+    # Usage budget & limits shown on the dashboard Usage tab. These are
+    # local, advisory caps displayed alongside actual spend — they are NOT
+    # enforced by the agent loop.  Defaults mirror a typical $70/mo plan.
+    # All values are USD.  ``monthly_cap_usd`` is the calendar-month spend
+    # cap; ``five_hour_limit_usd`` / ``weekly_limit_usd`` are the rolling
+    # 5-hour / weekly limits with their reset cadence.
+    "usage": {
+        "monthly_cap_usd": 70.0,
+        "five_hour_limit_usd": 14.0,
+        "weekly_limit_usd": 35.0,
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 34,
 }
