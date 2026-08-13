@@ -8059,7 +8059,6 @@ async function spawnPoolBackend(profile, entry) {
   // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
   backend.args = getBackendArgsForRuntime(backend)
   const hermesCwd = resolveHermesCwd()
-  const webDist = resolveWebDist()
   const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
   rememberLog(`Starting Hermes backend for profile "${profile}" via ${backend.label}`)
@@ -8086,7 +8085,16 @@ async function spawnPoolBackend(profile, entry) {
         // serving backend + its MCP child subtree. See web_server.py
         // _start_parent_death_watchdog.
         HERMES_PARENT_PID: String(process.pid),
-        HERMES_WEB_DIST: webDist,
+        // The backend is headless and never serves a SPA, so it must NOT
+        // receive HERMES_WEB_DIST (the desktop bundle). When the var leaks
+        // in, every terminal/shell the backend spawns inherits it, and
+        // `hermes dashboard` from those shells serves the DESKTOP renderer —
+        // which cannot run in a browser or the preview webview and shows the
+        // "Desktop IPC bridge is unavailable" card. The desktop app exposes
+        // its own UI directly; the backend's web surface is the real
+        // dashboard (web/ bundle), which requires the var to be ABSENT.
+        // (Node omits `undefined` values from a child's env.)
+        HERMES_WEB_DIST: undefined,
         ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
       },
       shell: backend.shell,
@@ -8351,7 +8359,6 @@ async function startHermes() {
     // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
     backend.args = getBackendArgsForRuntime(backend)
     const hermesCwd = resolveHermesCwd()
-    const webDist = resolveWebDist()
     const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
@@ -8384,7 +8391,10 @@ async function startHermes() {
           // serving backend + its MCP child subtree. See web_server.py
           // _start_parent_death_watchdog.
           HERMES_PARENT_PID: String(process.pid),
-          HERMES_WEB_DIST: webDist,
+          // See the local-backend spawn above: HERMES_WEB_DIST must not leak
+          // into the backend env — it makes `hermes dashboard` from spawned
+          // shells serve the desktop bundle (IPC-bridge error in browsers).
+          HERMES_WEB_DIST: undefined,
           ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
         },
         shell: backend.shell,
