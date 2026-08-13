@@ -442,6 +442,7 @@ from hermes_cli.subcommands.cron import build_cron_parser
 from hermes_cli.subcommands.sync import build_sync_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
+from hermes_cli.subcommands.publish import build_publish_parser
 from hermes_cli.subcommands.model import build_model_parser
 from hermes_cli.subcommands.setup import build_setup_parser
 
@@ -4967,6 +4968,13 @@ def cmd_backup(args):
         from hermes_cli.backup import run_backup
 
         run_backup(args)
+
+
+def cmd_publish(args):
+    """Export a document (ADR / milestone / journal) as markdown and/or PDF."""
+    from hermes_cli.publish import cmd_publish as run_publish
+
+    return run_publish(args)
 
 
 def cmd_import(args):
@@ -10679,7 +10687,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "monitoring", "pairing", "pause", "pets", "plugins", "portal", "profile",
-        "project", "proxy",
+        "project", "proxy", "publish",
         "prompt-size",
         "resume",
         "send", "sessions", "setup",
@@ -12619,6 +12627,11 @@ def main():
     # profile command  (parser built in hermes_cli/subcommands/profile.py)
     # =========================================================================
     build_profile_parser(subparsers, cmd_profile=cmd_profile)
+
+    # =========================================================================
+    # publish command  (parser built in hermes_cli/subcommands/publish.py)
+    # =========================================================================
+    build_publish_parser(subparsers, cmd_publish=cmd_publish)
 
     # =========================================================================
     # completion command

@@ -161,6 +161,12 @@ dependencies = [
   # devices can still slip through; they get the same resolution failure as
   # before, worked around by installing with `--no-deps` or an older release.
   "nemo-relay>=0.7.1,<0.8; (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release) or (sys_platform == 'linux' and platform_machine == 'aarch64' and 'android' not in platform_release) or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')",
+  # PDF export for `hermes publish` (reportlab PDF rendering of ADRs,
+  # milestones, and journal entries). reportlab ships wheels for Linux,
+  # macOS and Windows (the C extensions are optional — the PDF generator in
+  # hermes_cli/publish.py only uses the pure-Python layout API), so it can
+  # live in the core install instead of an extra + lazy install.
+  "reportlab==4.5.1",
 ]
 
 [project.optional-dependencies]
