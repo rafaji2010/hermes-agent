@@ -6,11 +6,18 @@
  * layout (projects | milestones | tasks) with hand-drawn boxes and arrows in
  * Excalidraw's palette. This replaces the earlier d3-force and tldraw-editor
  * attempts, both of which were fragile for a read-only overview.
+ *
+ * Scope: like every workspace surface, this page resolves the project scope
+ * via `useWorkspaceScope` and passes `workspace_id` on the `/v1/graph` query
+ * — the backend refuses unscoped requests (403 SCOPE_UNRESOLVED).
  */
 
 import type { PluginContext } from '@hermes/plugin-sdk'
 import { EmptyState, ErrorState, Loader, useQuery } from '@hermes/plugin-sdk'
 import { useMemo } from 'react'
+
+import { scopeReady, useWorkspaceScope } from './scope'
+import { WorkspaceScopeNotice } from './scope-notice'
 
 export interface GraphNode {
   id: string
@@ -92,9 +99,13 @@ function truncate(s: string, n: number) {
 }
 
 export function GraphPage({ ctx }: { ctx: PluginContext }) {
+  const scope = useWorkspaceScope(ctx)
+  const ws = scopeReady(scope) ? scope.workspaceId : ''
+
   const { data, isLoading, error } = useQuery<GraphData>({
-    queryKey: ['workspace', 'graph'],
-    queryFn: () => ctx.rest<GraphData>('/v1/graph'),
+    queryKey: ['workspace', 'graph', ws],
+    queryFn: () => ctx.rest<GraphData>(`/v1/graph?workspace_id=${encodeURIComponent(ws)}`),
+    enabled: Boolean(ws),
     refetchInterval: 30000
   })
 
@@ -102,6 +113,10 @@ export function GraphPage({ ctx }: { ctx: PluginContext }) {
   const edges = data?.edges ?? []
 
   const { placed, byId, width, height } = useMemo(() => layout(nodes), [nodes])
+
+  if (!ws) {
+    return <WorkspaceScopeNotice ctx={ctx} scope={scope} />
+  }
 
   if (isLoading) return <Loader label="Loading knowledge graph…" />
   if (error) return <ErrorState title="Couldn't load the knowledge graph" description={String(error)} />
