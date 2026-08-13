@@ -74,6 +74,7 @@ describe('WORKSPACE_TABS', () => {
       'Roadmaps',
       'Tasks',
       'Board',
+      'Graph',
       'Search',
       'Analytics',
       'Assistant',

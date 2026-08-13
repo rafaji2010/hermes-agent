@@ -2142,6 +2142,22 @@ DEFAULT_CONFIG = {
         #     - "git push --force*"
         #     - "*curl*|*sh*"
         "deny": [],
+        # Deterministic risk-tier overlay (M13.1). Evaluated BEFORE the
+        # smart-approval LLM, so known-safe commands auto-approve and
+        # known-dangerous ones auto-deny WITHOUT any cloud call — cutting
+        # cost and attack surface. Each entry is {"glob": "...", "action":
+        # "auto"|"approve"|"escalate"|"deny"}. Globs are fnmatch patterns
+        # matched (case-insensitive) against the command string. "auto"
+        # approves read-only/safe commands; "approve"/"deny"/"escalate"
+        # force that verdict. Evaluation order: deny > escalate > approve
+        # > auto. If no glob matches, fall through to the smart LLM.
+        # Example:
+        #   risk_tiers:
+        #     - glob: "git status*"
+        #       action: "auto"
+        #     - glob: "rm -rf /etc*"
+        #       action: "deny"
+        "risk_tiers": [],
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates
         # the provider prompt cache (tool schemas are baked into the system

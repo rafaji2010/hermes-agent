@@ -14,6 +14,7 @@ from hermes_constants import get_hermes_home
 from tools.approval import (
     _get_approval_mode,
     _normalize_approval_mode,
+    _risk_tier_verdict,
     _smart_approve,
     approve_session,
     detect_dangerous_command,
@@ -52,6 +53,38 @@ class TestSmartApproval:
         assert result == "approve"
         assert mock_call.call_args.kwargs["task"] == "approval"
         assert mock_call.call_args.kwargs["temperature"] == 0
+
+    def test_risk_tier_deny_wins_over_approve(self):
+        tiers = [
+            {"glob": "*rm -rf /etc*", "action": "deny"},
+            {"glob": "*", "action": "approve"},
+        ]
+        assert _risk_tier_verdict("rm -rf /etc/passwd", tiers) == "deny"
+        assert _risk_tier_verdict("git status", tiers) == "approve"
+
+    def test_risk_tier_escalate_beats_approve(self):
+        tiers = [
+            {"glob": "*sudo*", "action": "escalate"},
+            {"glob": "*", "action": "approve"},
+        ]
+        assert _risk_tier_verdict("sudo apt install x", tiers) == "escalate"
+        assert _risk_tier_verdict("ls -la", tiers) == "approve"
+
+    def test_risk_tier_auto_falls_through_to_none_for_non_read_only(self):
+        tiers = [{"glob": "*", "action": "auto"}]
+        # read-only -> auto
+        assert _risk_tier_verdict("git status", tiers) == "auto"
+        # non-read-only still returns auto (the caller decides read-only-ness)
+        assert _risk_tier_verdict("python3 -c 'print(1)'", tiers) == "auto"
+
+    def test_risk_tier_no_match_returns_none(self):
+        tiers = [{"glob": "*rm -rf /etc*", "action": "deny"}]
+        assert _risk_tier_verdict("git status", tiers) is None
+        assert _risk_tier_verdict("git status", None) is None
+
+    def test_risk_tier_case_insensitive(self):
+        tiers = [{"glob": "*GIT STATUS*", "action": "approve"}]
+        assert _risk_tier_verdict("git status", tiers) == "approve"
 
     def test_smart_approval_does_not_allowlist_the_pattern_for_session(self, monkeypatch):
         session_key = "test-smart-per-command"

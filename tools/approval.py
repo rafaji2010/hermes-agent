@@ -3116,6 +3116,51 @@ def _get_smart_policy() -> str:
     return policy.strip()
 
 
+_READ_ONLY_PREFIXES = (
+    "ls ", "cat ", "head ", "tail ", "grep ", "git status", "git log", "git diff",
+    "pwd", "echo", "find ", "wc ", "stat ", "df ", "ps ", "env", "python3 -c",
+)
+
+
+def _is_read_only_command(command: str) -> bool:
+    """Heuristic: is this command read-only (safe to auto-approve)?"""
+    cmd = command.strip().lower()
+    return any(cmd.startswith(p) or f" {p.strip()}" in f" {cmd}" for p in _READ_ONLY_PREFIXES)
+
+
+def _risk_tier_verdict(command: str, risk_tiers: list | None) -> str | None:
+    """Deterministic risk-tier overlay (M13.1).
+
+    Returns 'approve' | 'deny' | 'escalate' | 'auto' | None.  Evaluated
+    BEFORE the smart-approval LLM: a matching tier short-circuits the
+    cloud call.  Order: deny > escalate > approve > auto.  'auto' means
+    approve-only-when-read-only (the caller decides).  None = no match,
+    fall through to the LLM.
+    """
+    if not risk_tiers:
+        return None
+    import fnmatch
+
+    verdicts: list[str] = []
+    cmd = command.lower()
+    for tier in risk_tiers:
+        if not isinstance(tier, dict):
+            continue
+        glob = tier.get("glob")
+        action = tier.get("action")
+        if not glob or action not in ("auto", "approve", "escalate", "deny"):
+            continue
+        if fnmatch.fnmatch(cmd, glob.lower()):
+            verdicts.append(action)
+    if not verdicts:
+        return None
+    # Precedence: deny > escalate > approve > auto
+    for action in ("deny", "escalate", "approve", "auto"):
+        if action in verdicts:
+            return action
+    return None
+
+
 def _smart_approve(command: str, description: str) -> str:
     """Use the auxiliary LLM to assess risk and decide approval.
 
@@ -4006,6 +4051,31 @@ def check_all_command_guards(command: str, env_type: str,
     smart_denied_for_owner = False
     if approval_mode == "smart":
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
+        # M13.1: deterministic risk-tier overlay — short-circuit the LLM for
+        # known-safe / known-dangerous commands (no cloud call, no prompt-
+        # injection surface for the guard).
+        risk_tiers = _get_approval_config().get("risk_tiers", []) or []
+        tier_verdict = _risk_tier_verdict(command, risk_tiers)
+        if tier_verdict == "deny":
+            logger.debug("Risk-tier overlay: DENY '%s'", command[:60])
+            return {"approved": False, "message": "Denied by risk-tier overlay.",
+                    "risk_tier": "deny"}
+        if tier_verdict == "approve":
+            logger.debug("Risk-tier overlay: APPROVE '%s'", command[:60])
+            return {"approved": True, "message": None,
+                    "smart_approved": True, "risk_tier": "approve",
+                    "description": combined_desc_for_llm}
+        if tier_verdict == "escalate":
+            # Force the user prompt (skip the LLM entirely).
+            logger.debug("Risk-tier overlay: ESCALATE '%s'", command[:60])
+            approval_mode = "default"  # fall through to the interactive prompt
+        elif tier_verdict == "auto":
+            # Approve only read-only commands; otherwise fall through.
+            if _is_read_only_command(command):
+                logger.debug("Risk-tier overlay: AUTO-approve read-only '%s'", command[:60])
+                return {"approved": True, "message": None,
+                        "smart_approved": True, "risk_tier": "auto",
+                        "description": combined_desc_for_llm}
         observer_payload = _prepare_smart_approval_observer(
             command=command,
             description=combined_desc_for_llm,
