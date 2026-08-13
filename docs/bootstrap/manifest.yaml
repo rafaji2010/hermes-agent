@@ -1,0 +1,38 @@
+# Bootstrap Knowledge Pack manifest.
+# Discovery entry point for tooling: every file in the pack, its role, and
+# where it lands in a target profile. Keep in sync with README.md.
+schema_version: 1
+name: hermes-bootstrap-soul
+description: >
+  Identity/instruction pack that bootstraps a fresh Hermes profile into a
+  productive instance. SOUL.md is the load-bearing file; it seeds
+  $HERMES_HOME/SOUL.md, which agent/prompt_builder.py::load_soul_md() loads as
+  identity slot #1 of the system prompt.
+apply_target: "$HERMES_HOME/SOUL.md"  # the loader reads only this path
+files:
+  - path: SOUL.md
+    role: identity
+    description: >
+      Agent identity + operating principles (tools, skills, memory, sessions,
+      delegation, verification, footprint). Copied verbatim to
+      $HERMES_HOME/SOUL.md (mirrors docker/SOUL.md seeding convention).
+    destination: $HERMES_HOME/SOUL.md
+    required: true
+    format: markdown
+  - path: README.md
+    role: documentation
+    description: >
+      Pack structure, the real SOUL.md loading mechanism (loader function and
+      path), seeding precedents, and step-by-step application to a new profile
+      with a verification snippet.
+    destination: <pack dir>  # documentation only, not installed into the profile
+    required: true
+    format: markdown
+  - path: manifest.yaml
+    role: manifest
+    description: >
+      This file. Machine-readable inventory of the pack's files and their
+      roles so tooling can discover and apply them.
+    destination: <pack dir>  # documentation only, not installed into the profile
+    required: true
+    format: yaml
