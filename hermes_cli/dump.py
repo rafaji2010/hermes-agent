@@ -223,6 +223,38 @@ def _get_model_and_provider(config: dict) -> tuple[str, str]:
     return model, provider
 
 
+# Canonical (env_var, label) pairs for the credential inventory shown by
+# ``hermes dump``.  Hoisted to module level so ``hermes self-describe`` can
+# reuse the exact same key inventory instead of maintaining a parallel list.
+API_KEY_LABELS: list[tuple[str, str]] = [
+    ("OPENROUTER_API_KEY", "openrouter"),
+    ("OPENAI_API_KEY", "openai"),
+    ("ANTHROPIC_API_KEY", "anthropic"),
+    ("ANTHROPIC_TOKEN", "anthropic_token"),
+    ("NOUS_API_KEY", "nous"),
+    ("GOOGLE_API_KEY", "google/gemini"),
+    ("GEMINI_API_KEY", "gemini"),
+    ("GLM_API_KEY", "glm/zai"),
+    ("ZAI_API_KEY", "zai"),
+    ("KIMI_API_KEY", "kimi"),
+    ("MINIMAX_API_KEY", "minimax"),
+    ("DEEPSEEK_API_KEY", "deepseek"),
+    ("DASHSCOPE_API_KEY", "dashscope"),
+    ("HF_TOKEN", "huggingface"),
+    ("NVIDIA_API_KEY", "nvidia"),
+    ("AI_GATEWAY_API_KEY", "ai_gateway"),
+    ("OPENCODE_ZEN_API_KEY", "opencode_zen"),
+    ("OPENCODE_GO_API_KEY", "opencode_go"),
+    ("KILOCODE_API_KEY", "kilocode"),
+    ("FIRECRAWL_API_KEY", "firecrawl"),
+    ("TAVILY_API_KEY", "tavily"),
+    ("BROWSERBASE_API_KEY", "browserbase"),
+    ("FAL_KEY", "fal"),
+    ("ELEVENLABS_API_KEY", "elevenlabs"),
+    ("GITHUB_TOKEN", "github"),
+]
+
+
 def _config_overrides(config: dict) -> dict[str, str]:
     """Find non-default config values worth reporting.
     
@@ -364,37 +396,9 @@ def run_dump(args):
     # API keys
     lines.append("")
     lines.append("api_keys:")
-    api_keys = [
-        ("OPENROUTER_API_KEY", "openrouter"),
-        ("OPENAI_API_KEY", "openai"),
-        ("ANTHROPIC_API_KEY", "anthropic"),
-        ("ANTHROPIC_TOKEN", "anthropic_token"),
-        ("NOUS_API_KEY", "nous"),
-        ("GOOGLE_API_KEY", "google/gemini"),
-        ("GEMINI_API_KEY", "gemini"),
-        ("GLM_API_KEY", "glm/zai"),
-        ("ZAI_API_KEY", "zai"),
-        ("KIMI_API_KEY", "kimi"),
-        ("MINIMAX_API_KEY", "minimax"),
-        ("DEEPSEEK_API_KEY", "deepseek"),
-        ("DASHSCOPE_API_KEY", "dashscope"),
-        ("HF_TOKEN", "huggingface"),
-        ("NVIDIA_API_KEY", "nvidia"),
-        ("AI_GATEWAY_API_KEY", "ai_gateway"),
-        ("OPENCODE_ZEN_API_KEY", "opencode_zen"),
-        ("OPENCODE_GO_API_KEY", "opencode_go"),
-        ("KILOCODE_API_KEY", "kilocode"),
-        ("FIRECRAWL_API_KEY", "firecrawl"),
-        ("TAVILY_API_KEY", "tavily"),
-        ("BROWSERBASE_API_KEY", "browserbase"),
-        ("FAL_KEY", "fal"),
-        ("ELEVENLABS_API_KEY", "elevenlabs"),
-        ("GITHUB_TOKEN", "github"),
-    ]
-
     dotenv_keys = _dotenv_key_names()
 
-    for env_var, label in api_keys:
+    for env_var, label in API_KEY_LABELS:
         val = os.getenv(env_var, "")
         if show_keys and val:
             display = _redact(val)
