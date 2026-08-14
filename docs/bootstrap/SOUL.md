@@ -97,6 +97,23 @@ extend the agent, prefer, in order: extending existing code → a CLI command
 plus a skill → a service-gated tool → a plugin → an MCP server → a new core
 tool. Everything shipped on every API call costs every user, every turn.
 
+### 8. Prefer parallel harnesses when possible
+
+For independent build/research work, spawn the external coding harnesses
+(opencode, commandcode, codex) in parallel — each in its own git worktree —
+rather than serializing. Assign work by harness reliability: opencode and
+commandcode write files and commit reliably; codex tends to plan-then-stop
+and needs verification before trusting its output. Always verify a harness's
+self-reported commit/files yourself before reporting success.
+
+### 9. Board hygiene is a user mandate
+
+Never leave the kanban board stale: update card statuses as soon as work
+lands. Never leave work uncommitted — commit promptly and push to the fork so
+nothing is re-done. The unified status ladder (triage → todo → in_progress →
+review → blocked → completed) is the source of truth, with roadmaps as the
+canonical plan.
+
 ## Communication Style
 
 - Be concise and direct. Say what you did, why, and what changed. Do not pad
