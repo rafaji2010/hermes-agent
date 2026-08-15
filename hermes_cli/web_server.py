@@ -50,6 +50,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
+import httpx
 import yaml
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -14950,6 +14951,235 @@ def _get_usage_budget(profile: Optional[str] = None) -> Dict[str, Any]:
 async def get_usage_budget(profile: Optional[str] = None):
     """Budget + limits for the Usage tab (off the event loop)."""
     return await asyncio.to_thread(_get_usage_budget, profile)
+
+
+# ---------------------------------------------------------------------------
+# /api/usage/providers — real per-provider spend aggregation for the Usage tab.
+#
+# Three independent sources:
+#   1. OpenRouter  — exact REST spend via GET https://openrouter.ai/api/v1/credits,
+#                    keyed by OPENROUTER_API_KEY from the profile .env (or the
+#                    process env).  ``total_usage`` maps to spend USD and
+#                    ``total_credits`` to remaining credits.
+#   2. opencode    — local SQLite store at ~/.local/share/opencode/opencode.db.
+#                    Token/cost fields live in the JSON ``data`` blobs of the
+#                    message/part/session tables; aggregated per session.
+#   3. commandcode — no server usage/billing API (all endpoints 404); its real
+#                    plan/credits live server-side in the TUI /usage panel and
+#                    are not scrapeable.  Local JSONL transcripts under
+#                    ~/.commandcode/projects/ are counted; spend is null.
+# ---------------------------------------------------------------------------
+
+
+def _openrouter_api_key(profile: Optional[str]) -> str:
+    """Resolve the OpenRouter API key for a profile.
+
+    The key lives in the profile secrets file (``~/.hermes/.env``) as
+    ``OPENROUTER_API_KEY``; the process env may also carry it.  Resolution
+    order: process env, then the profile-scoped ``.env``.  Never logged or
+    echoed in any response.
+    """
+    from hermes_cli.config import load_env
+
+    key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+    if key:
+        return key
+    with _config_profile_scope(profile):
+        key = (load_env().get("OPENROUTER_API_KEY") or "").strip()
+    return key
+
+
+def _get_openrouter_usage(profile: Optional[str]) -> Dict[str, Any]:
+    """Fetch OpenRouter credits spend. Returns an error entry when the key is
+    missing or the API call fails; the response body never contains the key."""
+    key = _openrouter_api_key(profile)
+    if not key:
+        return {"provider": "openrouter", "error": "no key"}
+    try:
+        resp = httpx.get(
+            "https://openrouter.ai/api/v1/credits",
+            headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
+            timeout=8.0,
+        )
+        resp.raise_for_status()
+        data = (resp.json() or {}).get("data") or {}
+        total_usage = float(data.get("total_usage") or 0.0)
+        total_credits = float(data.get("total_credits") or 0.0)
+        return {
+            "provider": "openrouter",
+            "spend_usd": round(total_usage, 4),
+            "credits_remaining": round(total_credits, 4),
+            "period": "billing-month",
+            "source": "api",
+        }
+    except Exception as exc:
+        _log.warning("GET /api/usage/providers: OpenRouter fetch failed: %s", exc)
+        return {"provider": "openrouter", "error": f"fetch failed: {exc}", "source": "api"}
+
+
+def _opencode_db_path() -> Path:
+    """Default opencode SQLite store path (machine-local, not profile-scoped)."""
+    return Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+
+
+def _sum_opencode_json_usage(rows) -> Dict[str, float]:
+    """Aggregate token/cost fields from opencode ``data`` JSON blobs.
+
+    Assistant message blobs carry ``cost`` and ``tokens: {input, output,
+    cache: {read, write}, total}``.  We sum per provider-relevant keys; the
+    ``session`` table may also carry ``cost``/``tokens_*`` columns (newer
+    stores) which are preferred when present.
+    """
+    totals = {
+        "cost": 0.0,
+        "tokens_input": 0,
+        "tokens_output": 0,
+        "tokens_cache_read": 0,
+        "tokens_cache_write": 0,
+    }
+    for row in rows:
+        raw = (row[0] or "") if row else ""
+        if not raw:
+            continue
+        try:
+            blob = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        cost = blob.get("cost")
+        if isinstance(cost, (int, float)):
+            totals["cost"] += float(cost)
+        tokens = blob.get("tokens") or {}
+        input_tok = tokens.get("input")
+        output_tok = tokens.get("output")
+        cache = tokens.get("cache") or {}
+        cache_read = cache.get("read")
+        cache_write = cache.get("write")
+        if isinstance(input_tok, (int, float)):
+            totals["tokens_input"] += int(input_tok)
+        if isinstance(output_tok, (int, float)):
+            totals["tokens_output"] += int(output_tok)
+        if isinstance(cache_read, (int, float)):
+            totals["tokens_cache_read"] += int(cache_read)
+        if isinstance(cache_write, (int, float)):
+            totals["tokens_cache_write"] += int(cache_write)
+    return totals
+
+
+def _get_opencode_usage() -> Dict[str, Any]:
+    """Aggregate opencode usage from its local SQLite store (read-only).
+
+    Newer stores carry per-session ``cost``/``tokens_*`` columns on the
+    ``session`` table; older ones keep the numbers inside the JSON ``data``
+    blobs of ``message``/``part``.  Prefer the columnar aggregate when
+    available, else fall back to summing the JSON.
+    """
+    import sqlite3
+
+    db_path = _opencode_db_path()
+    if not db_path.exists():
+        return {"provider": "opencode", "error": "db not found", "source": "local-db"}
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
+        try:
+            session_cols = {
+                row[1] for row in conn.execute("PRAGMA table_info(session)").fetchall()
+            }
+            if {"cost", "tokens_input", "tokens_output", "tokens_cache_read"} <= session_cols:
+                row = conn.execute(
+                    """
+                    SELECT COUNT(*),
+                           COALESCE(SUM(cost), 0),
+                           COALESCE(SUM(tokens_input), 0),
+                           COALESCE(SUM(tokens_output), 0),
+                           COALESCE(SUM(tokens_cache_read), 0)
+                    FROM session
+                    """
+                ).fetchone()
+                sessions = int(row[0] or 0)
+                cost = float(row[1] or 0.0)
+                tokens_input = int(row[2] or 0)
+                tokens_output = int(row[3] or 0)
+                tokens_cache_read = int(row[4] or 0)
+            else:
+                rows = conn.execute(
+                    "SELECT data FROM message WHERE data IS NOT NULL"
+                ).fetchall()
+                totals = _sum_opencode_json_usage(rows)
+                sessions = conn.execute("SELECT COUNT(*) FROM session").fetchone()[0]
+                cost = totals["cost"]
+                tokens_input = totals["tokens_input"]
+                tokens_output = totals["tokens_output"]
+                tokens_cache_read = totals["tokens_cache_read"]
+        finally:
+            conn.close()
+        return {
+            "provider": "opencode",
+            "spend_usd": round(cost, 4),
+            "tokens": {
+                "input": tokens_input,
+                "output": tokens_output,
+                "cache_read": tokens_cache_read,
+            },
+            "sessions": sessions,
+            "source": "local-db",
+        }
+    except Exception as exc:
+        _log.warning("GET /api/usage/providers: opencode DB read failed: %s", exc)
+        return {"provider": "opencode", "error": f"db read failed: {exc}", "source": "local-db"}
+
+
+def _commandcode_projects_dir() -> Path:
+    """Default commandcode transcript root (machine-local)."""
+    return Path.home() / ".commandcode" / "projects"
+
+
+def _get_commandcode_usage() -> Dict[str, Any]:
+    """Count commandcode sessions from its local JSONL transcripts.
+
+    commandcode exposes no usage/billing REST endpoint — its real
+    plan/credits are server-side in the interactive TUI /usage panel and are
+    not scrapeable.  Local transcripts exist but carry no token/cost fields,
+    so we report the session count with spend as null.
+    """
+    projects_dir = _commandcode_projects_dir()
+    sessions = 0
+    try:
+        if projects_dir.is_dir():
+            for path in projects_dir.rglob("*.jsonl"):
+                if path.name.endswith(".checkpoints.jsonl"):
+                    continue
+                sessions += 1
+    except OSError as exc:
+        _log.warning("GET /api/usage/providers: commandcode scan failed: %s", exc)
+        return {
+            "provider": "commandcode",
+            "error": f"scan failed: {exc}",
+            "source": "local-transcripts",
+        }
+    return {
+        "provider": "commandcode",
+        "spend_usd": None,
+        "sessions": sessions,
+        "note": "server-side only — plan/credits not exposed via API",
+        "source": "local-transcripts",
+    }
+
+
+def _get_usage_providers(profile: Optional[str] = None) -> Dict[str, Any]:
+    """Aggregate spend from all known providers (off the event loop)."""
+    return {
+        "providers": [
+            _get_openrouter_usage(profile),
+            _get_opencode_usage(),
+            _get_commandcode_usage(),
+        ]
+    }
+
+
+@app.get("/api/usage/providers")
+async def get_usage_providers(profile: Optional[str] = None):
+    """Real per-provider spend for the Usage dashboard tab (off the event loop)."""
+    return await asyncio.to_thread(_get_usage_providers, profile)
 
 
 # ---------------------------------------------------------------------------
