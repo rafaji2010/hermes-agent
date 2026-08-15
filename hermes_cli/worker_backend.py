@@ -542,7 +542,14 @@ class CodexBackend(SubprocessBackend):
 
 
 class OpencodeBackend(SubprocessBackend):
-    """``opencode run --auto "<task>"`` (with ``--model`` when configured)."""
+    """``opencode run --auto "<task>"`` (with ``--model`` when configured).
+
+    The harness determines its own working directory from the tty/session
+    rather than the spawned process ``cwd``, so when the spec carries a
+    ``workspace`` it is passed explicitly via ``--dir`` — otherwise tasks
+    would silently run in the parent process's directory and leak out of an
+    isolated workspace.
+    """
 
     worker_type = "opencode"
 
@@ -551,6 +558,8 @@ class OpencodeBackend(SubprocessBackend):
         command = ["opencode", "run", "--auto"]
         if model:
             command += ["--model", model]
+        if request.workspace:
+            command += ["--dir", request.workspace]
         command.append(request.task)
         return command
 
@@ -771,6 +780,24 @@ def next_best_worker(
     if ranked:
         return ranked[0]
     raise WorkerBackendError("no installed worker to switch to")
+
+
+# ---------------------------------------------------------------------------
+# Synchronous execution helper (§18/§20)
+# ---------------------------------------------------------------------------
+
+
+def run_task(spec: WorkerSpec, *, backend: AgentExecutionBackend | None = None) -> dict:
+    """Synchronously execute ``spec`` and return the final execution dict.
+
+    Thin convenience over ``start()`` + ``wait()`` used by the benchmark
+    suite (`hermes workers benchmark`): starts the execution, blocks until a
+    terminal status or the spec's timeout, and returns the final execution
+    dict (status / result / error) for evaluation.
+    """
+    instance = backend or get_backend(spec.worker_type)
+    execution_id = instance.start(spec)
+    return instance.wait(execution_id)
 
 
 # ---------------------------------------------------------------------------

@@ -433,6 +433,11 @@ def run_workers_command(args) -> int:
 
         return run_workers_cli_command(args)
 
+    if action in ("benchmark",):
+        from hermes_cli.benchmark import run_benchmark_command
+
+        return run_benchmark_command(args)
+
     if action in ("list", "ls", "status", None):
         workers = load_all_workers(hermes_home)
         fleet = _fleet_detected()

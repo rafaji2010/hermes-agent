@@ -130,4 +130,44 @@ def build_workers_parser(subparsers, *, cmd_workers: Callable) -> None:
         help="Provider override for the codex harness",
     )
 
+    _benchmark = workers_subparsers.add_parser(
+        "benchmark",
+        help="Run the worker benchmark suite (categories §24, metrics §25)",
+        description=(
+            "Run the benchmark suite against the installed workers to gather "
+            "routing evidence (§13). Each selected category's self-verifying "
+            "tasks run through worker_backend.run_task() in a temp workspace; "
+            "per worker × task it records completion, correctness, tokens, "
+            "latency, and failure mode. Default workers: pi, codex, opencode, "
+            "commandcode (dsh is experimental and skipped unless requested)."
+        ),
+    )
+    _benchmark.add_argument(
+        "--worker",
+        default="",
+        help="Comma-separated worker types, e.g. pi,codex,opencode (default: all installed except dsh)",
+    )
+    _benchmark.add_argument(
+        "--category",
+        default="",
+        help="Comma-separated categories to run — keys A-G or names, e.g. coding,recovery (default: all)",
+    )
+    _benchmark.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON results (routing evidence)",
+    )
+    _benchmark.add_argument(
+        "--out",
+        default="",
+        metavar="FILE",
+        help="Write structured JSON results to FILE",
+    )
+    _benchmark.add_argument(
+        "--timeout",
+        type=int,
+        default=120,
+        help="Per-task timeout in seconds (default: 120)",
+    )
+
     workers_parser.set_defaults(func=cmd_workers)
