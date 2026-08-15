@@ -22,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -401,6 +402,149 @@ def _print_json(workers: list[dict], fleet: dict | None, hermes_herdr: bool) -> 
 
 
 # ---------------------------------------------------------------------------
+# Live fleet view (§28) — running executions + persisted history
+# ---------------------------------------------------------------------------
+
+def _truncate(text: str, width: int) -> str:
+    """Collapse whitespace and trim ``text`` to ``width`` chars with a tail mark."""
+    text = (text or "").strip().replace("\n", " ")
+    return text if len(text) <= width else text[: width - 1] + "…"
+
+
+def _fmt_elapsed(started_at) -> str:
+    """Wall-clock elapsed since ``started_at`` as a compact duration."""
+    if not isinstance(started_at, (int, float)):
+        return "—"
+    seconds = max(0, int(time.time() - started_at))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, secs = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m{secs:02d}s"
+    hours, mins = divmod(minutes, 60)
+    return f"{hours}h{mins:02d}m"
+
+
+def _fmt_clock(timestamp) -> str:
+    """Format a UTC epoch as ``HH:MM:SS`` (live view)."""
+    if not isinstance(timestamp, (int, float)):
+        return "—"
+    return time.strftime("%H:%M:%S", time.gmtime(timestamp))
+
+
+def _fmt_datetime(timestamp) -> str:
+    """Format a UTC epoch as ``YYYY-MM-DD HH:MM:SS`` (history view)."""
+    if not isinstance(timestamp, (int, float)):
+        return "—"
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(timestamp))
+
+
+def _print_columns(rows: list[tuple[str, ...]]) -> None:
+    """Generic column table with a header underline, matching the fleet table."""
+    all_rows = [tuple(str(cell) for cell in row) for row in rows]
+    headers = all_rows[0]
+    widths = [max(len(row[i]) for row in all_rows) for i in range(len(headers))]
+    for index, row in enumerate(all_rows):
+        print("  ".join(row[j].ljust(widths[j]) for j in range(len(headers))).rstrip())
+        if index == 0:
+            print("  ".join("-" * w for w in widths))
+
+
+def _print_running_executions(executions: list[dict]) -> None:
+    print("Running executions:")
+    if not executions:
+        print("  none")
+        return
+    headers = ("EXECUTION_ID", "WORKER", "STATUS", "TASK", "STARTED", "ELAPSED")
+    rows = [
+        (
+            record.get("execution_id", ""),
+            record.get("worker_type", ""),
+            record.get("status", ""),
+            _truncate(record.get("task", ""), 60),
+            _fmt_clock(record.get("started_at")),
+            _fmt_elapsed(record.get("started_at")),
+        )
+        for record in executions
+    ]
+    _print_columns([headers, *rows])
+
+
+def _print_execution_history(history: list[dict]) -> None:
+    print(f"Recent executions ({len(history)}):")
+    if not history:
+        print("  none")
+        return
+    headers = ("EXECUTION_ID", "WORKER", "STATUS", "TASK", "STARTED", "ENDED", "DETAIL")
+    rows = []
+    for record in history:
+        detail = record.get("error") or record.get("result_tail") or ""
+        rows.append(
+            (
+                record.get("execution_id", ""),
+                record.get("worker_type", ""),
+                record.get("status", ""),
+                _truncate(record.get("task", ""), 60),
+                _fmt_datetime(record.get("started_at")),
+                _fmt_datetime(record.get("ended_at")),
+                _truncate(detail, 30),
+            )
+        )
+    _print_columns([headers, *rows])
+
+
+def _run_status_command(
+    args, workers: list[dict], fleet: dict | None, hermes_herdr: bool, hermes_home: Path
+) -> int:
+    """``hermes workers status`` — installed fleet + live executions (§28).
+
+    Always shows the installed workers and currently running/blocked
+    executions (from the mirrored live registry). With ``--all`` also lists
+    the most recent completed/failed executions from the persisted history
+    (``--limit N`` controls the count, default 10). Backward compatible: a
+    missing history/live store simply yields an empty section.
+    """
+    from hermes_cli import worker_backend
+
+    as_json = bool(getattr(args, "json", False))
+    show_all = bool(getattr(args, "all", False))
+    limit = max(1, int(getattr(args, "limit", 10) or 10))
+
+    running = worker_backend.load_live_executions(hermes_home)
+    history = worker_backend.load_execution_history(limit, hermes_home) if show_all else []
+
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "fleet": fleet,
+                    "workers": workers,
+                    "hermes_herdr_integration": hermes_herdr,
+                    "running": running,
+                    "history": history,
+                },
+                indent=2,
+                default=str,
+            )
+        )
+        return 0
+
+    _print_table(_worker_rows(workers))
+    if fleet:
+        print()
+        print(f"Fleet layer: {fleet['name']} {fleet.get('version') or '(version unknown)'}")
+    state = "installed" if hermes_herdr else "not installed"
+    print(f"Hermes herdr integration: {state}")
+
+    print()
+    _print_running_executions(running)
+    if show_all:
+        print()
+        _print_execution_history(history)
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Command handlers
 # ---------------------------------------------------------------------------
 
@@ -433,6 +577,11 @@ def run_workers_command(args) -> int:
 
         return run_workers_cli_command(args)
 
+    if action in ("resume",):
+        from hermes_cli.worker_backend import run_workers_resume_command
+
+        return run_workers_resume_command(args)
+
     if action in ("route",):
         from hermes_cli.worker_backend import run_workers_route_command
 
@@ -447,6 +596,8 @@ def run_workers_command(args) -> int:
         workers = load_all_workers(hermes_home)
         fleet = _fleet_detected()
         hermes_herdr = (hermes_home / HERMES_HERDR_PLUGIN).is_file()
+        if action == "status":
+            return _run_status_command(args, workers, fleet, hermes_herdr, hermes_home)
         if as_json:
             _print_json(workers, fleet, hermes_herdr)
         else:
@@ -454,9 +605,6 @@ def run_workers_command(args) -> int:
             if fleet:
                 print()
                 print(f"Fleet layer: {fleet['name']} {fleet.get('version') or '(version unknown)'}")
-            if action == "status":
-                state = "installed" if hermes_herdr else "not installed"
-                print(f"Hermes herdr integration: {state}")
         return 0
 
     print(f"error: unknown workers action '{action}'", file=sys.stderr)

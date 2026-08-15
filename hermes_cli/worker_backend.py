@@ -4,8 +4,13 @@ Builds the execution layer on top of the ``hermes_cli/workers.py`` capability
 registry: an ``AgentExecutionBackend`` abstraction (architecture doc §18) for
 launching and supervising the external coding-agent harnesses (pi, codex,
 opencode, commandcode, dsh), a ``WorkerSpec`` / ``WorkerExecution`` contract
-(§19), the execution lifecycle (§20), compact context handoff (§22), and
-retry / switch-on-failure handling (§29).
+(§19), the execution lifecycle (§20), compact context handoff (§22), retry /
+switch-on-failure handling (§29), and execution persistence + resume/recovery
+(§30). The persisted execution history
+(``<HERMES_HOME>/worker_executions.json``) and the mirrored live registry
+(``<HERMES_HOME>/worker_live.json``) back the fleet observability view (§28)
+— ``hermes workers status`` shows what is running/blocked live and what has
+completed/failed in the last N runs.
 
 Routing (§13) is evidence-driven: the task text is scanned for capability
 hints ("architecture/reasoning" → pi, "implement/code" → codex/opencode,
@@ -96,10 +101,16 @@ class WorkerSpec:
 
 @dataclass
 class WorkerExecution:
-    """The observable state of one execution, keyed by ``execution_id``."""
+    """The observable state of one execution, keyed by ``execution_id``.
+
+    ``task`` is the task text the execution ran — carried so the persisted
+    history (§30) and the live fleet view (§28) can answer "what is it
+    doing?" without re-deriving it.
+    """
 
     execution_id: str
     worker_type: str
+    task: str = ""
     status: str = PLANNED
     started_at: float = 0.0
     updated_at: float = 0.0
@@ -187,12 +198,13 @@ class SubprocessBackend(AgentExecutionBackend):
 
     # -- launch ---------------------------------------------------------------
 
-    def start(self, request: WorkerSpec) -> str:
+    def start(self, request: WorkerSpec, command: list[str] | None = None) -> str:
         execution_id = uuid.uuid4().hex
         now = time.time()
         execution = WorkerExecution(
             execution_id=execution_id,
             worker_type=self.worker_type,
+            task=request.task,
             status=PLANNED,
             started_at=now,
             updated_at=now,
@@ -204,7 +216,8 @@ class SubprocessBackend(AgentExecutionBackend):
             self._deadlines[execution_id] = now + request.timeout
 
         self._transition(execution_id, DISPATCHING)
-        command = self._build_command(request)
+        if command is None:
+            command = self._build_command(request)
         cwd = request.workspace or None
         try:
             proc = self._spawn(command, cwd)
@@ -213,6 +226,7 @@ class SubprocessBackend(AgentExecutionBackend):
             execution.status = FAILED
             execution.error = f"spawn failed: {exc}"
             execution.updated_at = time.time()
+            self._persist_execution_state(execution_id)
             return execution_id
         self._processes[execution_id] = proc
         self._transition(execution_id, RUNNING)
@@ -236,6 +250,35 @@ class SubprocessBackend(AgentExecutionBackend):
             return
         execution.status = status
         execution.updated_at = time.time()
+        self._persist_execution_state(execution_id)
+
+    def _persist_execution_state(self, execution_id: str) -> None:
+        """Write-through the execution's persisted state (§30).
+
+        Non-terminal executions are merged into the live registry so a
+        separate ``hermes workers status`` process can show them (§28); a
+        terminal execution is dropped from the live registry and appended to
+        the persisted execution history. The live registry is read-merged so
+        concurrent executions from other processes are preserved. Best-effort
+        — an unwritable store never fails the execution.
+        """
+        execution = self._executions.get(execution_id)
+        if execution is None:
+            return
+        try:
+            live = _read_live_map()
+            if execution.status in _TERMINAL_STATUSES:
+                live.pop(execution.execution_id, None)
+                append_execution_history(execution)
+            else:
+                record = _live_record(execution)
+                proc = self._processes.get(execution_id)
+                if proc is not None and getattr(proc, "pid", None):
+                    record["pid"] = proc.pid
+                live[execution.execution_id] = record
+            write_live_executions(live)
+        except OSError:
+            pass
 
     def _drain(self, execution_id: str) -> None:
         proc = self._processes.get(execution_id)
@@ -318,6 +361,7 @@ class SubprocessBackend(AgentExecutionBackend):
                 execution.error = f"exit code {rc}"
                 execution.result = self._all_output(execution_id)
             execution.updated_at = time.time()
+            self._persist_execution_state(execution_id)
             self._cleanup(execution_id)
             return
         self._drain(execution_id)
@@ -328,6 +372,7 @@ class SubprocessBackend(AgentExecutionBackend):
             execution.error = "timeout"
             execution.result = self._all_output(execution_id)
             execution.updated_at = time.time()
+            self._persist_execution_state(execution_id)
             self._cleanup(execution_id)
 
     # -- backend interface ------------------------------------------------------
@@ -395,6 +440,7 @@ class SubprocessBackend(AgentExecutionBackend):
         execution.error = "timeout"
         execution.result = self._all_output(execution_id)
         execution.updated_at = time.time()
+        self._persist_execution_state(execution_id)
         self._cleanup(execution_id)
 
     def status(self, execution_id: str) -> dict:
@@ -412,6 +458,7 @@ class SubprocessBackend(AgentExecutionBackend):
         if execution.status not in _TERMINAL_STATUSES:
             execution.status = CANCELLED
             execution.updated_at = time.time()
+            self._persist_execution_state(execution_id)
         self._cleanup(execution_id)
 
     def resume(self, execution_id: str) -> None:
@@ -438,6 +485,160 @@ def _terminal_predicate(condition):
 
 def _execution_dict(execution: WorkerExecution) -> dict:
     return asdict(execution)
+
+
+# ---------------------------------------------------------------------------
+# Execution history + live registry (§30 / §28)
+# ---------------------------------------------------------------------------
+#
+# Every execution's final state is persisted to
+# ``<HERMES_HOME>/worker_executions.json`` (append-only, capped at
+# HISTORY_CAP entries with the oldest dropped) so `hermes workers status
+# --all` can answer "what complete? what failed?" across restarts. In-flight
+# executions are mirrored to ``<HERMES_HOME>/worker_live.json`` so a separate
+# `hermes workers status` process can answer "which workers are running? what
+# task? which blocked?" without sharing the in-memory process registry.
+
+#: Execution-history store filename inside HERMES_HOME (§30).
+EXECUTION_HISTORY_STORE = "worker_executions.json"
+
+#: Live-registry store filename inside HERMES_HOME (§28).
+LIVE_EXECUTIONS_STORE = "worker_live.json"
+
+#: Max history entries kept (§30) — the oldest are dropped first.
+HISTORY_CAP = 100
+
+#: Length of the result text tail persisted per execution (§30).
+RESULT_TAIL_CHARS = 200
+
+#: Harnesses whose CLI advertises a resume/continue flag (§30). dsh and
+#: custom workers have no resume flag — ``resume`` re-issues those tasks as
+#: a fresh run instead and reports the new execution id.
+_RESUME_FLAGS: dict[str, str] = {
+    "pi": "--resume",
+    "codex": "--continue",
+    "opencode": "--continue",
+    "commandcode": "--continue",
+}
+
+
+def execution_history_path(hermes_home: Path | None = None) -> Path:
+    """Path to the persisted execution history (profile-aware, §30)."""
+    return (hermes_home or get_hermes_home()) / EXECUTION_HISTORY_STORE
+
+
+def live_executions_path(hermes_home: Path | None = None) -> Path:
+    """Path to the live-executions registry (profile-aware, §28)."""
+    return (hermes_home or get_hermes_home()) / LIVE_EXECUTIONS_STORE
+
+
+def _read_history(path: Path) -> list[dict]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    return [entry for entry in raw if isinstance(entry, dict)]
+
+
+def _history_record(execution: WorkerExecution) -> dict:
+    """Serialize an execution into its persisted-history shape (§30)."""
+    return {
+        "execution_id": execution.execution_id,
+        "worker_type": execution.worker_type,
+        "task": execution.task,
+        "status": execution.status,
+        "started_at": execution.started_at,
+        "ended_at": execution.updated_at,
+        "result_tail": (execution.result or "")[-RESULT_TAIL_CHARS:],
+        "error": execution.error,
+    }
+
+
+def _append_history_record(record: dict, hermes_home: Path | None = None) -> Path:
+    path = execution_history_path(hermes_home)
+    records = _read_history(path)
+    records.append(record)
+    if len(records) > HISTORY_CAP:
+        records = records[-HISTORY_CAP:]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(records, indent=2, default=str) + "\n", encoding="utf-8")
+    return path
+
+
+def append_execution_history(
+    execution: WorkerExecution, hermes_home: Path | None = None
+) -> Path:
+    """Append an execution's final state to the persisted history (§30).
+
+    Newest entries append at the end; entries beyond HISTORY_CAP are dropped
+    (oldest first). Returns the path written.
+    """
+    return _append_history_record(_history_record(execution), hermes_home)
+
+
+def load_execution_history(n: int = 10, hermes_home: Path | None = None) -> list[dict]:
+    """Return the most recent ``n`` terminal executions, newest first (§30).
+
+    Each record carries ``execution_id``, ``worker_type``, ``task``,
+    ``status``, ``started_at``, ``ended_at``, ``result_tail`` and ``error``.
+    Returns [] when no history file exists yet (backward compatible).
+    """
+    records = _read_history(execution_history_path(hermes_home))
+    recent = records[-n:] if n and n > 0 else records
+    return list(reversed(recent))
+
+
+def _live_record(execution: WorkerExecution) -> dict:
+    """Serialize an execution into its live-registry shape (§28)."""
+    return {
+        "execution_id": execution.execution_id,
+        "worker_type": execution.worker_type,
+        "task": execution.task,
+        "status": execution.status,
+        "started_at": execution.started_at,
+        "updated_at": execution.updated_at,
+    }
+
+
+def _read_live_map(hermes_home: Path | None = None) -> dict[str, dict]:
+    try:
+        raw = json.loads(live_executions_path(hermes_home).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {key: value for key, value in raw.items() if isinstance(value, dict)}
+
+
+def write_live_executions(
+    executions: dict[str, dict], hermes_home: Path | None = None
+) -> Path:
+    """Persist the live registry (``{execution_id: record}``, §28).
+
+    Returns the path written. Missing/legacy stores are simply overwritten.
+    """
+    path = live_executions_path(hermes_home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(executions, indent=2, default=str) + "\n", encoding="utf-8")
+    return path
+
+
+def load_live_executions(hermes_home: Path | None = None) -> list[dict]:
+    """Currently in-flight executions, newest started first (§28).
+
+    Records carry ``execution_id``, ``worker_type``, ``task``, ``status``,
+    ``started_at`` and ``updated_at``. Returns [] when nothing is running.
+    """
+    records = list(_read_live_map(hermes_home).values())
+
+    def _started_at(record: dict) -> float:
+        value = record.get("started_at")
+        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+
+    records.sort(key=_started_at, reverse=True)
+    return records
 
 
 # ---------------------------------------------------------------------------
@@ -1183,6 +1384,176 @@ def run_workers_cli_command(args) -> int:
             print(final["result"], file=sys.stderr)
 
     return 1
+
+
+# ---------------------------------------------------------------------------
+# Resume / recovery (`hermes workers resume`, §30)
+# ---------------------------------------------------------------------------
+
+def build_resume_command(worker_type: str, task: str) -> list[str]:
+    """Resume argv for harnesses that advertise a resume/continue flag.
+
+    The harness is relaunched against the same task text with its
+    ``--resume``/``--continue`` flag. Harnesses without a resume flag return
+    an empty list — ``resume`` re-issues those as a fresh run instead.
+    """
+    if worker_type == "pi":
+        return ["pi", "--resume", task]
+    if worker_type == "codex":
+        return ["codex", "exec", "--continue", task]
+    if worker_type == "opencode":
+        return ["opencode", "run", "--continue", task]
+    if worker_type == "commandcode":
+        binary = resolve_binary("commandcode")
+        return [str(binary) if binary is not None else "commandcode", "--continue", task]
+    return []
+
+
+def _find_execution_record(
+    execution_id: str, hermes_home: Path | None = None
+) -> tuple[dict, str] | None:
+    """Locate an execution in the live registry or persisted history.
+
+    Returns ``(record, source)`` where source is ``"live"`` or ``"history"``,
+    or None when the execution is unknown.
+    """
+    for record in _read_live_map(hermes_home).values():
+        if record.get("execution_id") == execution_id:
+            return record, "live"
+    for record in _read_history(execution_history_path(hermes_home)):
+        if record.get("execution_id") == execution_id:
+            return record, "history"
+    return None
+
+
+def _pid_alive(pid) -> bool:
+    """Best-effort liveness probe for a harness process (§30).
+
+    A ``kill(pid, 0)`` probe: the process exists when the call succeeds or
+    raises PermissionError (owned by another user); anything else (no such
+    process, unsupported signal) means it is gone.
+    """
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def mark_execution_interrupted(
+    execution_id: str,
+    worker_type: str,
+    task: str,
+    started_at: float,
+    hermes_home: Path | None = None,
+) -> Path:
+    """Append a ``FAILED (interrupted)`` history record for a gone execution (§30).
+
+    The process backing an execution that should have been resumable no longer
+    exists (crashed / host restarted), so its terminal state is corrected to
+    ``FAILED`` with error ``"interrupted"`` and the task text is surfaced for
+    re-running. Returns the path written.
+    """
+    return _append_history_record(
+        {
+            "execution_id": execution_id,
+            "worker_type": worker_type,
+            "task": task,
+            "status": FAILED,
+            "started_at": started_at,
+            "ended_at": time.time(),
+            "result_tail": "",
+            "error": "interrupted",
+        },
+        hermes_home,
+    )
+
+
+def run_workers_resume_command(args) -> int:
+    """``hermes workers resume <execution_id>`` — recover an execution (§30).
+
+    For an execution whose harness supports resumption, re-attach to it when
+    its process is still alive (relaunch the harness with its
+    ``--resume``/``--continue`` flag); when the process is gone, mark the
+    execution ``FAILED (interrupted)`` and offer the task text to re-run via
+    ``hermes workers run``. Honesty rule: when the harness has no resume flag,
+    ``resume`` re-issues the task as a fresh run and reports the new execution
+    id. Returns the process exit code.
+    """
+    execution_id = getattr(args, "execution_id", None) or ""
+    if not execution_id.strip():
+        print("error: execution_id must not be empty", file=sys.stderr)
+        return 1
+    hermes_home = get_hermes_home()
+    found = _find_execution_record(execution_id.strip(), hermes_home)
+    if found is None:
+        print(
+            f"error: unknown execution '{execution_id}' — "
+            "not in the live registry or execution history",
+            file=sys.stderr,
+        )
+        return 1
+    record, source = found
+    worker_type = str(record.get("worker_type") or "")
+    task = str(record.get("task") or "")
+    resume_flag = _RESUME_FLAGS.get(worker_type)
+
+    if worker_type in BACKENDS and resolve_binary(worker_type) is None:
+        print(f"error: worker '{worker_type}' is not installed on this machine", file=sys.stderr)
+        return 1
+
+    if resume_flag:
+        # The harness supports resumption: re-attach only when the backing
+        # process is genuinely still alive.
+        still_alive = source == "live" and _pid_alive(record.get("pid"))
+        if still_alive:
+            command = build_resume_command(worker_type, task)
+            backend = get_backend(worker_type)
+            new_id = backend.start(
+                WorkerSpec(worker_type=worker_type, task=task), command=command
+            )
+            print(f"resumed {execution_id} as {new_id} (re-attached via {resume_flag})")
+            return 0
+        # The process is gone (history record, or a stale live entry whose pid
+        # no longer exists) — mark the execution interrupted and offer the
+        # task text to re-run.
+        started_at = record.get("started_at")
+        mark_execution_interrupted(
+            execution_id, worker_type, task, started_at or 0.0, hermes_home
+        )
+        live = _read_live_map(hermes_home)
+        live.pop(execution_id, None)
+        write_live_executions(live, hermes_home)
+        print(
+            f"execution {execution_id}: process is gone — marked FAILED (interrupted)",
+            file=sys.stderr,
+        )
+        print(f"task: {task}", file=sys.stderr)
+        print(
+            f're-run with: hermes workers run "{task}" --worker {worker_type}',
+            file=sys.stderr,
+        )
+        return 1
+
+    if not worker_type:
+        print(f"error: execution '{execution_id}' has no worker type to resume", file=sys.stderr)
+        return 1
+
+    # Honesty rule (§30): the harness has no resume flag, so re-issue the
+    # task as a fresh run and report the new execution id.
+    backend = get_backend(worker_type)
+    new_id = backend.start(WorkerSpec(worker_type=worker_type, task=task))
+    print(
+        f"resumed {execution_id} as {new_id} "
+        f"(no resume flag for '{worker_type}' — re-issued the task as a fresh run)"
+    )
+    return 0
 
 
 # ---------------------------------------------------------------------------
