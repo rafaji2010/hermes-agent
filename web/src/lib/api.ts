@@ -508,6 +508,8 @@ export const api = {
     fetchJSON<ModelsAnalyticsResponse>(
       appendProfileParam(`/api/analytics/models?days=${days}`, profile),
     ),
+  getUsageProviders: () =>
+    fetchJSON<UsageProvidersResponse>("/api/usage/providers"),
   getConfig: (profile = getManagementProfile()) =>
     fetchJSON<Record<string, unknown>>(appendProfileParam("/api/config", profile)),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
@@ -2112,6 +2114,33 @@ export interface AnalyticsResponse {
     summary: AnalyticsSkillsSummary;
     top_skills: AnalyticsSkillEntry[];
   };
+}
+
+// ── Provider spend (`GET /api/usage/providers`) ───────────────────────
+// Real usage reported by/collected for each LLM provider. `spend_usd` is
+// null when the provider doesn't expose spend via its API (e.g. server-side
+// plans billed in credits), and entries may carry an `error` when the
+// collector failed for that provider.
+export interface UsageProviderTokens {
+  input: number;
+  output: number;
+  cache_read: number;
+}
+
+export interface UsageProvider {
+  provider: string;
+  spend_usd: number | null;
+  credits_remaining?: number | null;
+  tokens?: UsageProviderTokens;
+  sessions?: number;
+  period?: string;
+  source?: string;
+  note?: string;
+  error?: string;
+}
+
+export interface UsageProvidersResponse {
+  providers: UsageProvider[];
 }
 
 export interface ActiveProfileInfo {
