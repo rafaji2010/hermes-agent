@@ -64,4 +64,70 @@ def build_workers_parser(subparsers, *, cmd_workers: Callable) -> None:
     )
     _remove.add_argument("name", help="Worker name to remove")
 
+    _run = workers_subparsers.add_parser(
+        "run",
+        help="Execute a task on an external worker harness",
+        description=(
+            "Route a task to the best installed worker harness (or force one "
+            "with --worker), start it in its workspace, and optionally wait "
+            "for completion. Implements the AgentExecutionBackend contract: "
+            "spec → execution_id, lifecycle PLANNED→DISPATCHING→RUNNING→"
+            "DONE/FAILED, and §29 failure handling (--retry, "
+            "--switch-on-failure)."
+        ),
+    )
+    _run.add_argument("task", help="The task/prompt to run on the worker")
+    _run.add_argument(
+        "--worker",
+        help="Force a specific worker type (pi, codex, opencode, commandcode, dsh, or a registered custom worker)",
+    )
+    _run.add_argument(
+        "--capabilities",
+        nargs="+",
+        metavar="capability",
+        help="Required capabilities for routing, e.g. coding testing",
+    )
+    _run.add_argument(
+        "--workspace",
+        default="",
+        help="Working directory for the worker process (default: current directory)",
+    )
+    _run.add_argument(
+        "--wait",
+        action="store_true",
+        help="Wait for completion, printing lifecycle transitions and the result",
+    )
+    _run.add_argument(
+        "--timeout",
+        type=int,
+        default=600,
+        help="Per-execution timeout in seconds (default: 600)",
+    )
+    _run.add_argument(
+        "--retry",
+        type=int,
+        default=0,
+        help="On failure, retry up to N times with a fresh execution (default: 0)",
+    )
+    _run.add_argument(
+        "--switch-on-failure",
+        action="store_true",
+        help="On failure, route the retry to the next-best worker once",
+    )
+    _run.add_argument(
+        "--context",
+        default="",
+        help="Compact context handoff for the worker (§22)",
+    )
+    _run.add_argument(
+        "--model",
+        default="",
+        help="Model override for the codex/opencode harnesses",
+    )
+    _run.add_argument(
+        "--provider",
+        default="",
+        help="Provider override for the codex harness",
+    )
+
     workers_parser.set_defaults(func=cmd_workers)

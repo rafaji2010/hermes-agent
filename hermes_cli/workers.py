@@ -428,6 +428,11 @@ def run_workers_command(args) -> int:
         print(f"error: custom worker '{args.name}' is not registered", file=sys.stderr)
         return 1
 
+    if action in ("run",):
+        from hermes_cli.worker_backend import run_workers_cli_command
+
+        return run_workers_cli_command(args)
+
     if action in ("list", "ls", "status", None):
         workers = load_all_workers(hermes_home)
         fleet = _fleet_detected()
