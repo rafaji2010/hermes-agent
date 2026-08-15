@@ -14960,15 +14960,46 @@ async def get_usage_budget(profile: Optional[str] = None):
 #   1. OpenRouter  — exact REST spend via GET https://openrouter.ai/api/v1/credits,
 #                    keyed by OPENROUTER_API_KEY from the profile .env (or the
 #                    process env).  ``total_usage`` maps to spend USD and
-#                    ``total_credits`` to remaining credits.
-#   2. opencode    — local SQLite store at ~/.local/share/opencode/opencode.db.
-#                    Token/cost fields live in the JSON ``data`` blobs of the
-#                    message/part/session tables; aggregated per session.
+#                    ``total_credits`` to remaining credits.  OpenRouter exposes
+#                    NO per-model listing endpoint — ``/api/v1/generation``
+#                    requires a single ``id`` (the raw call 400s with a ZodError
+#                    on `path: ["id"]`), so per-model token bars are estimated
+#                    from the models this machine routed through OpenRouter,
+#                    splitting the real ``total_usage`` proportionally.
+#   2. opencode    — ``opencode stats --models`` (the CLI the user sees) is run
+#                    and its ASCII table parsed for overview + per-model
+#                    Messages / Input / Output / Cache Read / Cost.  Falls back
+#                    to the local SQLite store at ~/.local/share/opencode/opencode.db.
 #   3. commandcode — no server usage/billing API (all endpoints 404); its real
 #                    plan/credits live server-side in the TUI /usage panel and
 #                    are not scrapeable.  Local JSONL transcripts under
-#                    ~/.commandcode/projects/ are counted; spend is null.
+#                    ~/.commandcode/projects/ are counted for sessions; assistant
+#                    message counts per model feed the requests-by-model chart.
+#                    Spend stays null.
+#
+# The consolidated ``requests_by_model`` series (one entry per short model name,
+# colored per provider) powers the Requests-by-model bar chart in the dashboard.
 # ---------------------------------------------------------------------------
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_STATS_BOX_CHARS = str.maketrans("", "", "│─┌┐└┘├┤")
+
+
+def _short_model_name(model: str) -> str:
+    """Collapse a provider-prefixed model slug to its readable tail.
+
+    'openrouter/deepseek/deepseek-chat' -> 'deepseek-chat'
+    'opencode/deepseek-v4-flash-free'   -> 'deepseek-v4-flash-free'
+    'deepseek/deepseek-v4-flash'        -> 'deepseek-v4-flash'
+    'deepseek-chat'                     -> 'deepseek-chat'
+    """
+    model = (model or "").strip()
+    if not model:
+        return "unknown"
+    if model.startswith("openrouter/"):
+        parts = model.split("/")
+        return "/".join(parts[2:]) if len(parts) >= 3 else parts[-1]
+    return model.split("/")[-1]
 
 
 def _openrouter_api_key(profile: Optional[str]) -> str:
@@ -14989,9 +15020,77 @@ def _openrouter_api_key(profile: Optional[str]) -> str:
     return key
 
 
+def _openrouter_session_models(profile: Optional[str]) -> List[Dict[str, Any]]:
+    """Per-model usage recorded locally for OpenRouter-routed sessions.
+
+    OpenRouter's REST API has no listing endpoint (``/api/v1/generation``
+    requires a single ``id``), so the per-model token bars are estimated from
+    the models this machine actually routed through OpenRouter (hermes
+    ``session_model_usage`` / ``sessions`` rows whose billing_provider is
+    'openrouter').  Returns [] when nothing is recorded locally.
+    """
+    try:
+        db = _open_session_db_for_profile(profile, read_only=True)
+    except Exception:
+        return []
+    try:
+        try:
+            rows = db._conn.execute(
+                """
+                SELECT u.model,
+                       SUM(COALESCE(u.api_call_count, 0)) as api_calls,
+                       SUM(u.input_tokens) as input_tokens,
+                       SUM(u.output_tokens) as output_tokens,
+                       SUM(COALESCE(u.cache_read_tokens, 0)) as cache_read_tokens,
+                       COALESCE(SUM(u.estimated_cost_usd), 0) as estimated_cost
+                FROM session_model_usage u
+                JOIN sessions s ON s.id = u.session_id
+                WHERE u.billing_provider = 'openrouter' OR u.model LIKE 'openrouter/%'
+                GROUP BY u.model
+                ORDER BY SUM(u.input_tokens) + SUM(u.output_tokens) DESC
+                """
+            ).fetchall()
+        except Exception:
+            # Fall back to the sessions table when session_model_usage is
+            # unavailable (e.g. older stores).
+            rows = db._conn.execute(
+                """
+                SELECT model,
+                       SUM(COALESCE(api_call_count, 0)) as api_calls,
+                       SUM(input_tokens) as input_tokens,
+                       SUM(output_tokens) as output_tokens,
+                       SUM(COALESCE(cache_read_tokens, 0)) as cache_read_tokens,
+                       COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost
+                FROM sessions
+                WHERE (billing_provider = 'openrouter' OR model LIKE 'openrouter/%')
+                  AND model IS NOT NULL
+                GROUP BY model
+                ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
+                """
+            ).fetchall()
+        result = []
+        for row in rows:
+            result.append({
+                "model": row[0],
+                "requests": int(row[1] or 0),
+                "input": int(row[2] or 0),
+                "output": int(row[3] or 0),
+                "cache_read": int(row[4] or 0),
+                "estimated_cost": float(row[5] or 0.0),
+            })
+        return result
+    finally:
+        db.close()
+
+
 def _get_openrouter_usage(profile: Optional[str]) -> Dict[str, Any]:
     """Fetch OpenRouter credits spend. Returns an error entry when the key is
-    missing or the API call fails; the response body never contains the key."""
+    missing or the API call fails; the response body never contains the key.
+
+    Per-model token bars come from :func:`_openrouter_session_models` — the
+    real ``total_usage`` spend is split across those models proportionally to
+    their locally recorded estimated cost (falling back to a token share when
+    cost accounting is absent)."""
     key = _openrouter_api_key(profile)
     if not key:
         return {"provider": "openrouter", "error": "no key"}
@@ -15005,21 +15104,228 @@ def _get_openrouter_usage(profile: Optional[str]) -> Dict[str, Any]:
         data = (resp.json() or {}).get("data") or {}
         total_usage = float(data.get("total_usage") or 0.0)
         total_credits = float(data.get("total_credits") or 0.0)
-        return {
+
+        entry: Dict[str, Any] = {
             "provider": "openrouter",
             "spend_usd": round(total_usage, 4),
             "credits_remaining": round(total_credits, 4),
             "period": "billing-month",
             "source": "api",
         }
+        models = _openrouter_session_models(profile)
+        if models:
+            total_est = sum(m["estimated_cost"] for m in models)
+            total_tokens = sum(m["input"] + m["output"] for m in models)
+            per_model = []
+            for m in models:
+                if total_est > 0:
+                    share = m["estimated_cost"] / total_est
+                elif total_tokens > 0:
+                    share = (m["input"] + m["output"]) / total_tokens
+                else:
+                    share = 1.0 / len(models)
+                per_model.append({
+                    "model": _short_model_name(m["model"]),
+                    "requests": m["requests"],
+                    "input": m["input"],
+                    "output": m["output"],
+                    "cost": round(total_usage * share, 6),
+                })
+            entry["tokens"] = {
+                "input": sum(m["input"] for m in models),
+                "output": sum(m["output"] for m in models),
+            }
+            entry["models"] = per_model
+            entry["note"] = (
+                "per-model split estimated from local sessions — "
+                "OpenRouter exposes no usage listing API"
+            )
+        return entry
     except Exception as exc:
         _log.warning("GET /api/usage/providers: OpenRouter fetch failed: %s", exc)
         return {"provider": "openrouter", "error": f"fetch failed: {exc}", "source": "api"}
 
 
+def _parse_opencode_stats(text: str) -> Optional[Dict[str, Any]]:
+    """Parse ``opencode stats --models`` ASCII output into structured data.
+
+    The CLI has no ``--json`` flag; the table is box-drawn UTF-8 with ANSI
+    cursor escapes.  Sections: OVERVIEW (Sessions/Messages/Days), COST & TOKENS
+    (Total Cost, Input, Output, Cache Read, ...) and MODEL USAGE (per-model
+    Messages / Input Tokens / Output Tokens / Cache Read / Cache Write /
+    Cost).  Values are right-aligned; token counts use K/M suffixes.  Returns
+    None when the expected sections/rows are missing (version drift).
+    """
+    text = _ANSI_ESCAPE_RE.sub("", text or "")
+    lines = [ln.translate(_STATS_BOX_CHARS) for ln in text.splitlines()]
+
+    def _section(after: str, before: str) -> List[str]:
+        start = end = None
+        for i, ln in enumerate(lines):
+            stripped = ln.strip()
+            if stripped == after:
+                start = i + 1
+            elif stripped == before and start is not None:
+                end = i
+                break
+        if start is None:
+            return []
+        return lines[start:(end if end is not None else len(lines))]
+
+    def _rows(block: List[str]) -> Dict[str, str]:
+        parsed = {}
+        for ln in block:
+            m = re.match(r"^(.*?)\s+(\S+)\s*$", ln)
+            if not m:
+                continue
+            label, value = m.group(1).strip(), m.group(2).strip()
+            if label and value:
+                parsed[label] = value
+        return parsed
+
+    def _num(value: str, default: float = 0.0) -> float:
+        v = (value or "").strip().lstrip("$").replace(",", "")
+        if not v:
+            return default
+        mult = 1
+        if v.endswith("K"):
+            mult, v = 1_000, v[:-1]
+        elif v.endswith("M"):
+            mult, v = 1_000_000, v[:-1]
+        try:
+            return float(v) * mult
+        except ValueError:
+            return default
+
+    overview = _rows(_section("OVERVIEW", "COST & TOKENS"))
+    cost_tokens = _rows(_section("COST & TOKENS", "MODEL USAGE"))
+    model_block = _section("MODEL USAGE", "TOOL USAGE")
+    if not overview or not cost_tokens:
+        return None
+
+    models: List[Dict[str, Any]] = []
+    current: Optional[Dict[str, Any]] = None
+    for ln in model_block:
+        if ln.startswith("  "):
+            stripped = ln.strip()
+            if not stripped:
+                continue
+            m = re.match(r"^(.*?)\s+(\S+)\s*$", stripped)
+            if not m or current is None:
+                continue
+            label, value = m.group(1).strip(), m.group(2).strip()
+            if label == "Messages":
+                current["requests"] = int(_num(value))
+            elif label == "Input Tokens":
+                current["input"] = int(_num(value))
+            elif label == "Output Tokens":
+                current["output"] = int(_num(value))
+            elif label == "Cache Read":
+                current["cache_read"] = int(_num(value))
+            elif label == "Cache Write":
+                current["cache_write"] = int(_num(value))
+            elif label == "Cost":
+                current["cost"] = _num(value)
+        elif ln.startswith(" ") and ln.strip():
+            if current is not None:
+                models.append(current)
+            current = {"model": ln.strip()}
+    if current is not None:
+        models.append(current)
+
+    return {
+        "sessions": int(_num(overview.get("Sessions"))),
+        "messages": int(_num(overview.get("Messages"))),
+        "days": int(_num(overview.get("Days"))),
+        "spend_usd": _num(cost_tokens.get("Total Cost")),
+        "avg_cost_per_day": _num(cost_tokens.get("Avg Cost/Day")),
+        "avg_tokens_per_session": int(_num(cost_tokens.get("Avg Tokens/Session"))),
+        "input": int(_num(cost_tokens.get("Input"))),
+        "output": int(_num(cost_tokens.get("Output"))),
+        "cache_read": int(_num(cost_tokens.get("Cache Read"))),
+        "cache_write": int(_num(cost_tokens.get("Cache Write"))),
+        "models": models,
+    }
+
+
+def _run_opencode_stats_cli() -> Optional[Dict[str, Any]]:
+    """Run ``opencode stats --models`` and parse it.
+
+    Returns None on any failure (CLI missing from PATH, non-zero exit,
+    timeout, unparseable output) so callers can fall back to the local DB.
+    """
+    import shutil
+    import subprocess
+
+    binary = shutil.which("opencode")
+    if not binary:
+        return None
+    try:
+        proc = subprocess.run(
+            [binary, "stats", "--models", "100"],
+            capture_output=True,
+            text=True,
+            timeout=20.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        return _parse_opencode_stats(proc.stdout)
+    except Exception:
+        _log.warning("GET /api/usage/providers: opencode stats parse failed")
+        return None
+
+
 def _opencode_db_path() -> Path:
     """Default opencode SQLite store path (machine-local, not profile-scoped)."""
     return Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+
+
+def _opencode_db_models(conn) -> List[Dict[str, Any]]:
+    """Per-model aggregates from the opencode ``session`` table (fallback path).
+
+    The ``session.model`` column stores a JSON blob like
+    ``{"id":"deepseek-v4-flash-free","providerID":"opencode"}``; the numeric
+    columns carry the real cost/token totals.  Returns [] when the store lacks
+    the columnar schema.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(session)").fetchall()}
+    if "model" not in cols:
+        return []
+    try:
+        rows = conn.execute(
+            """
+            SELECT model, COUNT(*),
+                   COALESCE(SUM(cost), 0),
+                   COALESCE(SUM(tokens_input), 0),
+                   COALESCE(SUM(tokens_output), 0),
+                   COALESCE(SUM(tokens_cache_read), 0)
+            FROM session WHERE model IS NOT NULL GROUP BY model
+            """
+        ).fetchall()
+    except Exception:
+        return []
+    models = []
+    for row in rows:
+        name = row[0]
+        if isinstance(name, str):
+            try:
+                parsed = json.loads(name)
+                if isinstance(parsed, dict) and parsed.get("id"):
+                    name = parsed["id"]
+            except (TypeError, ValueError):
+                pass
+        models.append({
+            "model": name,
+            "requests": int(row[1] or 0),
+            "cost": float(row[2] or 0.0),
+            "input": int(row[3] or 0),
+            "output": int(row[4] or 0),
+            "cache_read": int(row[5] or 0),
+        })
+    return models
 
 
 def _sum_opencode_json_usage(rows) -> Dict[str, float]:
@@ -15066,6 +15372,41 @@ def _sum_opencode_json_usage(rows) -> Dict[str, float]:
 
 
 def _get_opencode_usage() -> Dict[str, Any]:
+    """Aggregate opencode usage — primary source is the ``opencode stats
+    --models`` CLI the user sees; the local SQLite store is the fallback.
+
+    CLI path returns exact per-model Messages/Input/Output/Cache/Cost.  The DB
+    path reads the newer columnar ``session`` aggregate columns when present,
+    else sums the JSON ``data`` blobs of ``message``/``part``.
+    """
+    stats = _run_opencode_stats_cli()
+    if stats is not None:
+        return {
+            "provider": "opencode",
+            "spend_usd": round(stats["spend_usd"], 4),
+            "sessions": stats["sessions"],
+            "tokens": {
+                "input": stats["input"],
+                "output": stats["output"],
+                "cache_read": stats["cache_read"],
+            },
+            "models": [
+                {
+                    "model": _short_model_name(m["model"]),
+                    "requests": m.get("requests", 0),
+                    "input": m.get("input", 0),
+                    "output": m.get("output", 0),
+                    "cache_read": m.get("cache_read", 0),
+                    "cost": round(m.get("cost", 0.0), 6),
+                }
+                for m in stats["models"]
+            ],
+            "source": "cli",
+        }
+    return _get_opencode_usage_from_db()
+
+
+def _get_opencode_usage_from_db() -> Dict[str, Any]:
     """Aggregate opencode usage from its local SQLite store (read-only).
 
     Newer stores carry per-session ``cost``/``tokens_*`` columns on the
@@ -15110,6 +15451,17 @@ def _get_opencode_usage() -> Dict[str, Any]:
                 tokens_input = totals["tokens_input"]
                 tokens_output = totals["tokens_output"]
                 tokens_cache_read = totals["tokens_cache_read"]
+            models = [
+                {
+                    "model": _short_model_name(m["model"]),
+                    "requests": m["requests"],
+                    "input": m["input"],
+                    "output": m["output"],
+                    "cache_read": m["cache_read"],
+                    "cost": round(m["cost"], 6),
+                }
+                for m in _opencode_db_models(conn)
+            ]
         finally:
             conn.close()
         return {
@@ -15121,6 +15473,7 @@ def _get_opencode_usage() -> Dict[str, Any]:
                 "cache_read": tokens_cache_read,
             },
             "sessions": sessions,
+            "models": models,
             "source": "local-db",
         }
     except Exception as exc:
@@ -15133,22 +15486,55 @@ def _commandcode_projects_dir() -> Path:
     return Path.home() / ".commandcode" / "projects"
 
 
+def _commandcode_transcript_models(path: Path) -> Dict[str, int]:
+    """Count assistant messages per model in one JSONL transcript.
+
+    Transcript messages carry a ``model`` slug (e.g. ``deepseek/deepseek-v4-flash``)
+    on assistant turns; the count feeds the requests-by-model chart.
+    """
+    counts: Dict[str, int] = {}
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except (TypeError, ValueError):
+                    continue
+                if entry.get("type") != "message":
+                    continue
+                if (entry.get("message") or {}).get("role") != "assistant":
+                    continue
+                model = entry.get("model")
+                if model:
+                    counts[model] = counts.get(model, 0) + 1
+    except OSError:
+        pass
+    return counts
+
+
 def _get_commandcode_usage() -> Dict[str, Any]:
     """Count commandcode sessions from its local JSONL transcripts.
 
     commandcode exposes no usage/billing REST endpoint — its real
     plan/credits are server-side in the interactive TUI /usage panel and are
-    not scrapeable.  Local transcripts exist but carry no token/cost fields,
-    so we report the session count with spend as null.
+    not scrapeable.  Local transcripts are counted for sessions; assistant
+    messages per model feed the consolidated requests-by-model chart.  Spend
+    stays null.
     """
     projects_dir = _commandcode_projects_dir()
     sessions = 0
+    per_model: Dict[str, int] = {}
     try:
         if projects_dir.is_dir():
             for path in projects_dir.rglob("*.jsonl"):
                 if path.name.endswith(".checkpoints.jsonl"):
                     continue
                 sessions += 1
+                for model, count in _commandcode_transcript_models(path).items():
+                    per_model[model] = per_model.get(model, 0) + count
     except OSError as exc:
         _log.warning("GET /api/usage/providers: commandcode scan failed: %s", exc)
         return {
@@ -15156,23 +15542,65 @@ def _get_commandcode_usage() -> Dict[str, Any]:
             "error": f"scan failed: {exc}",
             "source": "local-transcripts",
         }
+    models = [
+        {"model": _short_model_name(model), "requests": count}
+        for model, count in sorted(per_model.items(), key=lambda kv: -kv[1])
+    ]
     return {
         "provider": "commandcode",
         "spend_usd": None,
         "sessions": sessions,
+        "models": models,
         "note": "server-side only — plan/credits not exposed via API",
         "source": "local-transcripts",
     }
 
 
+def _consolidate_requests_by_model(
+    providers: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Aggregate per-provider model request counts into one bar-chart series.
+
+    Each row is ``{model, requests, provider}`` with the short model name as
+    key.  When the same model name appears under several providers the request
+    counts are summed and the provider credited is the one contributing the
+    most requests (keeps the x-axis unique so Plot.barY renders clean bars).
+    """
+    buckets: Dict[str, Dict[str, Any]] = {}
+    for provider in providers:
+        provider_name = provider.get("provider")
+        for m in provider.get("models") or []:
+            model = m.get("model") or "unknown"
+            requests = int(m.get("requests") or 0)
+            if requests <= 0:
+                continue
+            bucket = buckets.setdefault(
+                model, {"model": model, "requests": 0, "_counts": {}}
+            )
+            bucket["requests"] += requests
+            bucket["_counts"][provider_name] = (
+                bucket["_counts"].get(provider_name, 0) + requests
+            )
+    result = []
+    for model, bucket in buckets.items():
+        provider = max(bucket["_counts"].items(), key=lambda kv: kv[1])[0]
+        result.append(
+            {"model": model, "requests": bucket["requests"], "provider": provider}
+        )
+    result.sort(key=lambda r: r["requests"], reverse=True)
+    return result
+
+
 def _get_usage_providers(profile: Optional[str] = None) -> Dict[str, Any]:
     """Aggregate spend from all known providers (off the event loop)."""
+    providers = [
+        _get_openrouter_usage(profile),
+        _get_opencode_usage(),
+        _get_commandcode_usage(),
+    ]
     return {
-        "providers": [
-            _get_openrouter_usage(profile),
-            _get_opencode_usage(),
-            _get_commandcode_usage(),
-        ]
+        "providers": providers,
+        "requests_by_model": _consolidate_requests_by_model(providers),
     }
 
 

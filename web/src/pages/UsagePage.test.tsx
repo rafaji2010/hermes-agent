@@ -61,6 +61,89 @@ async function render(ui: ReactNode) {
   });
 }
 
+function emptyAnalytics() {
+  return {
+    daily: [],
+    by_model: [],
+    totals: {
+      total_input: 0,
+      total_output: 0,
+      total_cache_read: 0,
+      total_reasoning: 0,
+      total_estimated_cost: 0,
+      total_actual_cost: 0,
+      total_sessions: 0,
+      total_api_calls: 0,
+    },
+    skills: {
+      summary: {
+        total_skill_loads: 0,
+        total_skill_edits: 0,
+        total_skill_actions: 0,
+        distinct_skills_used: 0,
+      },
+      top_skills: [],
+    },
+  };
+}
+
+const PROVIDER_FIXTURE = {
+  providers: [
+    {
+      provider: "openrouter",
+      spend_usd: 7.83,
+      credits_remaining: 35.0,
+      period: "billing-month",
+      source: "api",
+      tokens: { input: 2292, output: 5843, cache_read: 0 },
+      models: [
+        {
+          model: "gemini-3.6-flash",
+          requests: 2,
+          input: 2292,
+          output: 5843,
+          cost: 7.828827,
+        },
+      ],
+      note: "per-model split estimated from local sessions — OpenRouter exposes no usage listing API",
+    },
+    {
+      provider: "opencode",
+      spend_usd: 0.0,
+      sessions: 3,
+      tokens: { input: 418900, output: 55800, cache_read: 15700000 },
+      models: [
+        {
+          model: "deepseek-v4-flash-free",
+          requests: 177,
+          input: 418900,
+          output: 123000,
+          cache_read: 15700000,
+          cost: 0.0,
+        },
+      ],
+      source: "cli",
+    },
+    {
+      provider: "commandcode",
+      spend_usd: null,
+      sessions: 15,
+      models: [
+        { model: "deepseek-v4-flash", requests: 325 },
+        { model: "muse-spark-1.2-contributor", requests: 149 },
+      ],
+      note: "server-side only — plan/credits not exposed via API",
+      source: "local-transcripts",
+    },
+  ],
+  requests_by_model: [
+    { model: "deepseek-v4-flash", requests: 325, provider: "commandcode" },
+    { model: "deepseek-v4-flash-free", requests: 177, provider: "opencode" },
+    { model: "muse-spark-1.2-contributor", requests: 149, provider: "commandcode" },
+    { model: "gemini-3.6-flash", requests: 2, provider: "openrouter" },
+  ],
+};
+
 beforeEach(() => {
   apiMocks.getAnalytics.mockReset();
   apiMocks.getUsageProviders.mockReset();
@@ -86,7 +169,7 @@ afterEach(async () => {
 });
 
 describe("UsagePage", () => {
-  it("renders budget cards, activity charts and the model breakdown", async () => {
+  it("renders real provider cards, the requests-by-model bar chart and the model breakdown", async () => {
     const daily: AnalyticsDailyEntry[] = [
       {
         day: "2026-08-12",
@@ -143,150 +226,7 @@ describe("UsagePage", () => {
         top_skills: [],
       },
     });
-    apiMocks.fetchJSON.mockResolvedValue({
-      monthly: {
-        spend_usd: 1.5,
-        cap_usd: 10,
-        period_start: "2026-08-01",
-        period_end: "2026-08-31",
-        resets_in: "18d",
-      },
-      limits: {
-        five_hour: { used: 0.2, cap: 2, pct: 10, resets_in: "3h" },
-        weekly: { used: 1.2, cap: 5, pct: 24, resets_in: "4d" },
-      },
-      runs: { total: 42, last_24h: 7 },
-    });
-    apiMocks.getUsageProviders.mockResolvedValue({ providers: [] });
-
-    const { default: UsagePage } = await import("./UsagePage");
-    await render(<UsagePage />);
-
-    await act(async () => {
-      await vi.waitFor(() => expect(apiMocks.getAnalytics).toHaveBeenCalled());
-      await new Promise((r) => setTimeout(r, 0));
-    });
-
-    expect(container.textContent).toContain("Monthly usage");
-    expect(container.textContent).toContain("5-hour limit");
-    expect(container.textContent).toContain("Weekly limit");
-    expect(container.textContent).toContain("Total runs");
-    expect(container.textContent).toContain("42");
-    expect(container.textContent).toContain("Requests by model");
-    expect(container.textContent).toContain("Spend over time");
-    expect(container.textContent).toContain("Model & cost breakdown");
-    expect(container.textContent).toContain("By task");
-    expect(container.textContent).toContain("deepseek-chat");
-  });
-
-  it("renders budget placeholders when /api/usage/budget 404s", async () => {
-    apiMocks.getAnalytics.mockResolvedValue({
-      daily: [],
-      by_model: [],
-      totals: {
-        total_input: 0,
-        total_output: 0,
-        total_cache_read: 0,
-        total_reasoning: 0,
-        total_estimated_cost: 0,
-        total_actual_cost: 0,
-        total_sessions: 0,
-        total_api_calls: 0,
-      },
-      skills: {
-        summary: {
-          total_skill_loads: 0,
-          total_skill_edits: 0,
-          total_skill_actions: 0,
-          distinct_skills_used: 0,
-        },
-        top_skills: [],
-      },
-    });
-    apiMocks.fetchJSON.mockRejectedValue(new Error("404: Not Found"));
-    apiMocks.getUsageProviders.mockRejectedValue(new Error("404: Not Found"));
-
-    const { default: UsagePage } = await import("./UsagePage");
-    await render(<UsagePage />);
-
-    await act(async () => {
-      await vi.waitFor(() => expect(apiMocks.fetchJSON).toHaveBeenCalledWith("/api/usage/budget"));
-      await new Promise((r) => setTimeout(r, 0));
-    });
-
-    expect(apiMocks.fetchJSON).toHaveBeenCalledWith("/api/usage/budget");
-    expect(container.textContent).toContain("Monthly usage");
-    expect(container.textContent).toContain("Total runs");
-    expect(container.textContent).toContain("No usage data for this period");
-    // Graceful degradation: the provider section shows a subtle notice
-    // instead of crashing the page when the endpoint is unavailable.
-    expect(container.textContent).toContain("Provider usage");
-    expect(container.textContent).toContain("Provider data unavailable");
-  });
-
-  it("renders provider spend cards from /api/usage/providers", async () => {
-    apiMocks.getAnalytics.mockResolvedValue({
-      daily: [],
-      by_model: [],
-      totals: {
-        total_input: 0,
-        total_output: 0,
-        total_cache_read: 0,
-        total_reasoning: 0,
-        total_estimated_cost: 0,
-        total_actual_cost: 0,
-        total_sessions: 0,
-        total_api_calls: 0,
-      },
-      skills: {
-        summary: {
-          total_skill_loads: 0,
-          total_skill_edits: 0,
-          total_skill_actions: 0,
-          distinct_skills_used: 0,
-        },
-        top_skills: [],
-      },
-    });
-    apiMocks.fetchJSON.mockResolvedValue({
-      monthly: {
-        spend_usd: 0,
-        cap_usd: 0,
-        period_start: "2026-08-01",
-        period_end: "2026-08-31",
-        resets_in: "30d",
-      },
-      limits: {
-        five_hour: { used: 0, cap: 0, pct: 0, resets_in: "5h" },
-        weekly: { used: 0, cap: 0, pct: 0, resets_in: "7d" },
-      },
-      runs: { total: 0, last_24h: 0 },
-    });
-    apiMocks.getUsageProviders.mockResolvedValue({
-      providers: [
-        {
-          provider: "openrouter",
-          spend_usd: 7.83,
-          credits_remaining: 35.0,
-          period: "billing-month",
-          source: "api",
-        },
-        {
-          provider: "opencode",
-          spend_usd: 0.0,
-          tokens: { input: 243000, output: 28200, cache_read: 7500000 },
-          sessions: 1,
-          source: "local-db",
-        },
-        {
-          provider: "commandcode",
-          spend_usd: null,
-          sessions: 12,
-          note: "server-side only — plan/credits not exposed via API",
-          source: "local-transcripts",
-        },
-      ],
-    });
+    apiMocks.getUsageProviders.mockResolvedValue(PROVIDER_FIXTURE);
 
     const { default: UsagePage } = await import("./UsagePage");
     await render(<UsagePage />);
@@ -296,19 +236,63 @@ describe("UsagePage", () => {
       await new Promise((r) => setTimeout(r, 0));
     });
 
+    // Provider cards — real OpenRouter spend + credits.
     expect(container.textContent).toContain("Provider usage");
-    // OpenRouter — spend + credits remaining + progress share.
     expect(container.textContent).toContain("$7.83");
     expect(container.textContent).toContain("credits remaining");
     expect(container.textContent).toContain("$35.00");
     expect(container.textContent).toContain("Primary");
-    // opencode — zero spend renders as em-dash, tokens are K/M-formatted.
-    expect(container.textContent).toContain("—");
-    expect(container.textContent).toContain("243.0K");
-    expect(container.textContent).toContain("28.2K");
-    expect(container.textContent).toContain("7.5M");
-    expect(container.textContent).toContain("1 session");
+    // opencode — real zero spend renders as $0.00, per-model token bars show.
+    expect(container.textContent).toContain("$0.00");
+    expect(container.textContent).toContain("deepseek-v4-flash-free");
+    expect(container.textContent).toContain("3 sessions");
     // commandcode — no spend, muted server-side note.
     expect(container.textContent).toContain("server-side only");
+    expect(container.textContent).toContain("15 sessions");
+    // Bar chart + merged table sections render.
+    expect(container.textContent).toContain("Requests by model");
+    expect(container.textContent).toContain("Spend over time");
+    expect(container.textContent).toContain("Model & cost breakdown");
+    expect(container.textContent).toContain("gemini-3.6-flash");
+    expect(container.textContent).toContain("By task");
+  });
+
+  it("renders the provider unavailable notice when the endpoint fails", async () => {
+    apiMocks.getAnalytics.mockResolvedValue(emptyAnalytics());
+    apiMocks.getUsageProviders.mockRejectedValue(new Error("404: Not Found"));
+
+    const { default: UsagePage } = await import("./UsagePage");
+    await render(<UsagePage />);
+
+    await act(async () => {
+      await vi.waitFor(() => expect(apiMocks.getUsageProviders).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    // Graceful degradation: the provider section shows a subtle notice
+    // instead of crashing the page when the endpoint is unavailable.
+    expect(container.textContent).toContain("Provider usage");
+    expect(container.textContent).toContain("Provider data unavailable");
+    expect(container.textContent).toContain("No usage data for this period");
+  });
+
+  it("does not fetch or render the fake budget/limit endpoint", async () => {
+    apiMocks.getAnalytics.mockResolvedValue(emptyAnalytics());
+    apiMocks.getUsageProviders.mockResolvedValue({ providers: [], requests_by_model: [] });
+
+    const { default: UsagePage } = await import("./UsagePage");
+    await render(<UsagePage />);
+
+    await act(async () => {
+      await vi.waitFor(() => expect(apiMocks.getAnalytics).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    // The invented monthly-cap / 5-hour / weekly limits are gone from the UI.
+    expect(apiMocks.fetchJSON).not.toHaveBeenCalledWith("/api/usage/budget");
+    expect(container.textContent).not.toContain("Monthly usage");
+    expect(container.textContent).not.toContain("5-hour limit");
+    expect(container.textContent).not.toContain("Weekly limit");
+    expect(container.textContent).not.toContain("Total runs");
   });
 });

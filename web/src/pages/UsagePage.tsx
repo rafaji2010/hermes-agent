@@ -1,26 +1,23 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
 import {
-  Activity,
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
   BarChart3,
-  CalendarDays,
   Cpu,
   Layers,
   RefreshCw,
-  Timer,
   TrendingUp,
   Wallet,
 } from "lucide-react";
 import * as Plot from "@observablehq/plot";
-import { api, fetchJSON } from "@/lib/api";
+import { api } from "@/lib/api";
 import type {
   AnalyticsResponse,
-  AnalyticsModelEntry,
   UsageProvider,
+  UsageProviderModel,
   UsageProvidersResponse,
+  UsageRequestModelEntry,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -40,17 +37,14 @@ const PERIODS = [
 const CHART_HEIGHT_PX = 220;
 const MAX_MODEL_SERIES = 6;
 
-// Categorical palette for the per-model request series (browser-safe hex;
-// theme tokens don't resolve reliably inside SVG presentation attributes).
-const MODEL_SERIES_COLORS = [
-  "#f59e0b",
-  "#38bdf8",
-  "#22c55e",
-  "#a855f7",
-  "#ef4444",
-  "#ec4899",
-  "#64748b",
-];
+// Per-provider palette for the requests-by-model bar chart and card dots.
+// Browser-safe hex (theme tokens don't resolve reliably inside SVG
+// presentation attributes). OpenRouter amber, opencode sky, commandcode violet.
+const PROVIDER_COLORS: Record<string, string> = {
+  openrouter: "#f59e0b",
+  opencode: "#38bdf8",
+  commandcode: "#a855f7",
+};
 
 const PLOT_STYLE: Plot.PlotOptions["style"] = {
   background: "transparent",
@@ -60,7 +54,7 @@ const PLOT_STYLE: Plot.PlotOptions["style"] = {
 
 // ---------------------------------------------------------------------------
 // Types — the usage endpoint also returns `by_task`/`tools` beyond the base
-// `AnalyticsResponse` shape, and `/api/usage/budget` is built in parallel.
+// `AnalyticsResponse` shape; provider models are merged for the cost table.
 // ---------------------------------------------------------------------------
 
 interface UsageByTaskEntry {
@@ -76,19 +70,14 @@ interface UsageAnalyticsResponse extends AnalyticsResponse {
   by_task?: UsageByTaskEntry[];
 }
 
-interface UsageBudgetResponse {
-  monthly: {
-    spend_usd: number;
-    cap_usd: number;
-    period_start: string;
-    period_end: string;
-    resets_in: string;
-  };
-  limits: {
-    five_hour: { used: number; cap: number; pct: number; resets_in: string };
-    weekly: { used: number; cap: number; pct: number; resets_in: string };
-  };
-  runs: { total: number; last_24h: number };
+interface ProviderModelRow {
+  key: string;
+  model: string;
+  provider: string;
+  input_tokens: number;
+  output_tokens: number;
+  estimated_cost: number;
+  requests: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,16 +94,7 @@ function formatCost(n: number): string {
   if (n >= 1) return `$${n.toFixed(2)}`;
   if (n >= 0.01) return `$${n.toFixed(3)}`;
   if (n > 0) return `$${n.toFixed(4)}`;
-  return "$0";
-}
-
-function formatDay(day: string): string {
-  try {
-    const d = new Date(day + "T00:00:00");
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  } catch {
-    return day;
-  }
+  return "$0.00";
 }
 
 /** Short model name: strip vendor prefix like "openrouter/" or "anthropic/". */
@@ -263,56 +243,35 @@ function ChartEmpty() {
 }
 
 // ---------------------------------------------------------------------------
-// Section 2 — Activity charts
+// Requests by model — BAR chart colored per provider (OpenRouter-style)
 // ---------------------------------------------------------------------------
 
-function RequestsByModelChart({ data }: { data: UsageAnalyticsResponse }) {
+function RequestsByModelBarChart({ data }: { data: UsageRequestModelEntry[] }) {
   const rows = useMemo(() => {
-    const totalCalls = data.by_model.reduce((s, m) => s + (m.api_calls || 0), 0);
-    if (totalCalls <= 0) return [];
-    const sorted = [...data.by_model].sort((a, b) => (b.api_calls || 0) - (a.api_calls || 0));
-    const top = sorted.slice(0, MAX_MODEL_SERIES);
-    const otherCalls = sorted
-      .slice(MAX_MODEL_SERIES)
-      .reduce((s, m) => s + (m.api_calls || 0), 0);
-    const series = top.map((m) => ({ model: m.model, api_calls: m.api_calls || 0 }));
-    if (otherCalls > 0) series.push({ model: "Other", api_calls: otherCalls });
-    // The API only reports per-day totals and per-model totals, so split each
-    // day's calls across models proportionally to their period-wide share.
-    return data.daily.flatMap((d) => {
-      const dayCalls = d.api_calls || 0;
-      if (dayCalls <= 0) return [];
-      return series.map((s) => ({
-        day: new Date(`${d.day}T00:00:00Z`),
-        model: s.model,
-        api_calls: (dayCalls * s.api_calls) / totalCalls,
-      }));
-    });
+    return [...data].sort((a, b) => b.requests - a.requests).slice(0, MAX_MODEL_SERIES);
   }, [data]);
 
   const options = useMemo<Plot.PlotOptions>(() => {
-    const models = Array.from(new Set(rows.map((r) => r.model)));
+    const providers = Array.from(new Set(rows.map((r) => r.provider)));
     return {
       height: CHART_HEIGHT_PX,
       marginLeft: 44,
-      marginBottom: 32,
+      marginBottom: 56,
       color: {
         legend: true,
-        domain: models,
-        range: models.map((_, i) => MODEL_SERIES_COLORS[i % MODEL_SERIES_COLORS.length]),
+        domain: providers,
+        range: providers.map((p) => PROVIDER_COLORS[p] ?? "#64748b"),
       },
       marks: [
-        Plot.areaY(rows, {
-          x: "day",
-          y: "api_calls",
-          z: "model",
-          fill: "model",
-          curve: "natural",
+        Plot.barY(rows, {
+          x: "model",
+          y: "requests",
+          fill: "provider",
           tip: true,
         }),
         Plot.ruleY([0]),
       ],
-      x: { type: "utc", label: null },
+      x: { type: "band", label: null, tickRotate: -24 },
       y: { grid: true, label: null, tickFormat: "~s" },
       style: PLOT_STYLE,
     };
@@ -326,7 +285,7 @@ function RequestsByModelChart({ data }: { data: UsageAnalyticsResponse }) {
           <CardTitle className="text-base">Requests by model</CardTitle>
         </div>
         <div className="font-mondwest normal-case text-xs text-muted-foreground">
-          Daily API calls split by model
+          Real request counts across providers, colored by provider
         </div>
       </CardHeader>
       <CardContent>{rows.length > 0 ? <PlotChart options={options} /> : <ChartEmpty />}</CardContent>
@@ -411,12 +370,31 @@ function SpendOverTimeChart({ data }: { data: UsageAnalyticsResponse }) {
 }
 
 // ---------------------------------------------------------------------------
-// Section 3 — Model & cost breakdown
+// Model & cost breakdown — merged from the real per-provider model data
 // ---------------------------------------------------------------------------
 
-function ModelCostTable({ models }: { models: AnalyticsModelEntry[] }) {
+function mergeProviderModels(providers: UsageProvider[]): ProviderModelRow[] {
+  const rows: ProviderModelRow[] = [];
+  for (const p of providers) {
+    if (p.error || !p.models) continue;
+    for (const m of p.models) {
+      rows.push({
+        key: `${p.provider}:${m.model}`,
+        model: m.model,
+        provider: p.provider,
+        input_tokens: m.input ?? 0,
+        output_tokens: m.output ?? 0,
+        estimated_cost: m.cost ?? 0,
+        requests: m.requests ?? 0,
+      });
+    }
+  }
+  return rows;
+}
+
+function ModelCostTable({ models }: { models: ProviderModelRow[] }) {
   const { t } = useI18n();
-  const { sorted, sortKey, sortDir, toggle } = useTableSort(models, "estimated_cost", "desc");
+  const { sorted, sortKey, sortDir, toggle } = useTableSort(models, "requests", "desc");
 
   if (models.length === 0) return null;
 
@@ -427,6 +405,9 @@ function ModelCostTable({ models }: { models: AnalyticsModelEntry[] }) {
           <Cpu className="h-5 w-5 text-muted-foreground" />
           <CardTitle className="text-base">Model & cost breakdown</CardTitle>
         </div>
+        <div className="font-mondwest normal-case text-xs text-muted-foreground">
+          Merged across OpenRouter, opencode and commandcode
+        </div>
       </CardHeader>
       <CardContent>
         <div className="overflow-x-auto">
@@ -434,21 +415,30 @@ function ModelCostTable({ models }: { models: AnalyticsModelEntry[] }) {
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
                 <SortHeader label={t.analytics.model} col="model" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
+                <SortHeader label="Provider" col="provider" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 px-4 font-medium" />
                 <SortHeader label={t.analytics.input} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
                 <SortHeader label={t.analytics.output} col="output_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
                 <SortHeader label={t.models.estimatedCost} col="estimated_cost" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.apiCalls} col="api_calls" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
+                <SortHeader label={t.analytics.apiCalls} col="requests" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
               </tr>
             </thead>
             <tbody>
               {sorted.map((m) => (
                 <tr
-                  key={m.model}
+                  key={m.key}
                   className="border-b border-border/50 hover:bg-secondary/20 transition-colors"
                 >
                   <td className="py-2 pr-4">
                     <span className="font-mono-ui text-xs">{shortModelName(m.model)}</span>
+                  </td>
+                  <td className="py-2 px-4">
+                    <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <span
+                        className="inline-block h-2 w-2 rounded-full"
+                        style={{ backgroundColor: PROVIDER_COLORS[m.provider] ?? "#64748b" }}
+                      />
+                      {m.provider}
+                    </span>
                   </td>
                   <td className="text-right py-2 px-4">
                     <span style={{ color: "var(--series-input-token)" }}>
@@ -461,8 +451,7 @@ function ModelCostTable({ models }: { models: AnalyticsModelEntry[] }) {
                     </span>
                   </td>
                   <td className="text-right py-2 px-4 font-medium">{formatCost(m.estimated_cost)}</td>
-                  <td className="text-right py-2 px-4 text-muted-foreground">{m.api_calls}</td>
-                  <td className="text-right py-2 pl-4 text-muted-foreground">{m.sessions}</td>
+                  <td className="text-right py-2 pl-4 text-muted-foreground">{m.requests}</td>
                 </tr>
               ))}
             </tbody>
@@ -519,7 +508,8 @@ function ByTaskList({ tasks }: { tasks: UsageByTaskEntry[] | undefined }) {
 }
 
 // ---------------------------------------------------------------------------
-// Section 1 — Budget cards
+// Provider cards — real spend + credits + per-model token bars (OpenRouter
+// style), one card per LLM provider.
 // ---------------------------------------------------------------------------
 
 function ProgressBar({ pct, color }: { pct: number; color: string }) {
@@ -534,118 +524,65 @@ function ProgressBar({ pct, color }: { pct: number; color: string }) {
   );
 }
 
-function UsageLimitCard({
-  icon,
-  title,
-  used,
-  cap,
-  pct,
-  footer,
-}: {
-  icon: ReactNode;
-  title: string;
-  used: number;
-  cap: number | null;
-  pct: number;
-  footer: string;
-}) {
-  const color = usageColor(pct);
+/** Per-model "All Tokens" mini-bars, like OpenRouter's usage page: a stacked
+ * bar per model scaled to the largest row, with input/output/cache segments. */
+function ModelTokenBars({ models }: { models: UsageProviderModel[] }) {
+  if (!models || models.length === 0) return null;
+  const maxTokens = Math.max(
+    ...models.map((m) => (m.input ?? 0) + (m.output ?? 0) + (m.cache_read ?? 0)),
+    1,
+  );
   return (
-    <Card>
-      <CardHeader className="pb-2">
-        <div className="flex items-center gap-2">
-          <span className="text-muted-foreground">{icon}</span>
-          <CardTitle className="text-sm">{title}</CardTitle>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-2">
-        <div className="flex items-baseline gap-1.5">
-          <span className="text-xl font-mono font-semibold">{formatCost(used)}</span>
-          <span className="text-sm text-muted-foreground">
-            of {cap != null ? formatCost(cap) : "—"}
-          </span>
-          {cap != null && (
-            <span className="ml-auto text-xs font-medium" style={{ color }}>
-              {pct.toFixed(0)}%
-            </span>
-          )}
-        </div>
-        <ProgressBar pct={cap != null ? pct : 0} color={color} />
-        {footer && <div className="text-xs text-text-tertiary">{footer}</div>}
-      </CardContent>
-    </Card>
+    <div className="space-y-2">
+      {models.map((m) => {
+        const input = m.input ?? 0;
+        const output = m.output ?? 0;
+        const cacheRead = m.cache_read ?? 0;
+        const total = input + output + cacheRead;
+        if (total <= 0) return null;
+        const segments: Array<{ value: number; color: string; label: string }> = [
+          { value: cacheRead, color: "#60a5fa", label: "cache" },
+          { value: input, color: "var(--series-input-token)", label: "input" },
+          { value: output, color: "var(--series-output-token)", label: "output" },
+        ].filter((s) => s.value > 0);
+        return (
+          <div key={m.model} className="space-y-0.5">
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <span className="truncate font-mono-ui text-xs text-muted-foreground">
+                {shortModelName(m.model)}
+              </span>
+              <span className="shrink-0 font-mono text-xs text-text-tertiary">
+                {formatTokens(total)}
+              </span>
+            </div>
+            <div className="flex h-1.5 w-full overflow-hidden bg-secondary">
+              {segments.map((s, i) => (
+                <div
+                  key={i}
+                  className="h-full"
+                  style={{
+                    backgroundColor: s.color,
+                    width: `${(s.value / maxTokens) * 100}%`,
+                  }}
+                />
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-text-tertiary">
+              {segments.map((s, i) => (
+                <span key={i}>
+                  <span style={{ color: s.color }}>{formatTokens(s.value)}</span> {s.label}
+                </span>
+              ))}
+              {m.cost != null && m.cost > 0 && (
+                <span className="font-medium text-foreground/70">{formatCost(m.cost)}</span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
-
-function BudgetSection({ budget }: { budget: UsageBudgetResponse | null }) {
-  const m = budget?.monthly;
-  const fh = budget?.limits?.five_hour;
-  const wk = budget?.limits?.weekly;
-  const monthlyPct = m && m.cap_usd > 0 ? (m.spend_usd / m.cap_usd) * 100 : 0;
-  const monthlyFooter = m
-    ? m.period_end
-      ? `resets ${formatDay(m.period_end)}`
-      : m.resets_in
-        ? `resets in ${m.resets_in}`
-        : ""
-    : "";
-
-  return (
-    <section className="flex flex-col gap-3">
-      {budget === null && (
-        <p className="text-xs text-text-tertiary">
-          Budget limits endpoint not available — showing placeholders.
-        </p>
-      )}
-      <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-4">
-        <UsageLimitCard
-          icon={<Wallet className="h-4 w-4" />}
-          title="Monthly usage"
-          used={m?.spend_usd ?? 0}
-          cap={m && m.cap_usd > 0 ? m.cap_usd : null}
-          pct={monthlyPct}
-          footer={monthlyFooter}
-        />
-        <UsageLimitCard
-          icon={<Timer className="h-4 w-4" />}
-          title="5-hour limit"
-          used={fh?.used ?? 0}
-          cap={fh && fh.cap > 0 ? fh.cap : null}
-          pct={fh?.pct ?? 0}
-          footer={fh?.resets_in ? `resets in ${fh.resets_in}` : ""}
-        />
-        <UsageLimitCard
-          icon={<CalendarDays className="h-4 w-4" />}
-          title="Weekly limit"
-          used={wk?.used ?? 0}
-          cap={wk && wk.cap > 0 ? wk.cap : null}
-          pct={wk?.pct ?? 0}
-          footer={wk?.resets_in ? `resets in ${wk.resets_in}` : ""}
-        />
-        <Card>
-          <CardHeader className="pb-2">
-            <div className="flex items-center gap-2">
-              <Activity className="h-4 w-4 text-muted-foreground" />
-              <CardTitle className="text-sm">Total runs</CardTitle>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-1">
-            <div className="text-2xl font-mono font-semibold">{budget?.runs.total ?? "—"}</div>
-            <div className="text-xs text-text-tertiary">
-              {budget?.runs.last_24h != null
-                ? `${budget.runs.last_24h} in the last 24h`
-                : "last 24h —"}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Section 2 — Provider usage (real spend from the LLM providers)
-// ---------------------------------------------------------------------------
 
 function ProviderCard({
   provider,
@@ -654,7 +591,16 @@ function ProviderCard({
   provider: UsageProvider;
   highlight?: boolean;
 }) {
-  const { provider: name, spend_usd, credits_remaining, tokens, sessions, note, error } = provider;
+  const {
+    provider: name,
+    spend_usd,
+    credits_remaining,
+    tokens,
+    models,
+    sessions,
+    note,
+    error,
+  } = provider;
 
   // A failed collector for one provider must not kill the whole section.
   if (error) {
@@ -682,6 +628,10 @@ function ProviderCard({
     <Card className={highlight ? "border-primary/40" : undefined}>
       <CardHeader className="pb-2">
         <div className="flex items-center gap-2">
+          <span
+            className="h-2.5 w-2.5 shrink-0 rounded-full"
+            style={{ backgroundColor: PROVIDER_COLORS[name] ?? "#64748b" }}
+          />
           <CardTitle className="text-sm">{name}</CardTitle>
           {highlight && (
             <span className="ml-auto rounded bg-primary/10 px-1.5 py-0.5 text-display text-[10px] font-medium tracking-wider text-primary">
@@ -690,11 +640,9 @@ function ProviderCard({
           )}
         </div>
       </CardHeader>
-      <CardContent className="space-y-2">
+      <CardContent className="space-y-3">
         <div className="flex items-baseline gap-1.5">
-          <span className="text-xl font-mono font-semibold">
-            {spend_usd === 0 ? "—" : (spend ?? "—")}
-          </span>
+          <span className="text-xl font-mono font-semibold">{spend ?? "—"}</span>
           <span className="text-sm text-muted-foreground">spent</span>
         </div>
         {credits != null && (
@@ -713,7 +661,9 @@ function ProviderCard({
             )}
           </>
         )}
-        {tokens && (
+        {models && models.length > 0 ? (
+          <ModelTokenBars models={models} />
+        ) : tokens && (tokens.input || tokens.output || tokens.cache_read) ? (
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mondwest normal-case text-xs text-muted-foreground">
             <span>
               <span style={{ color: "var(--series-input-token)" }}>{formatTokens(tokens.input)}</span>{" "}
@@ -725,7 +675,7 @@ function ProviderCard({
             </span>
             <span>cache {formatTokens(tokens.cache_read)}</span>
           </div>
-        )}
+        ) : null}
         {sessions != null && (
           <div className="text-xs text-text-tertiary">
             {sessions} session{sessions === 1 ? "" : "s"}
@@ -797,7 +747,6 @@ function ProviderUsageSection({
 export default function UsagePage() {
   const [period, setPeriod] = useState<string>("30d");
   const [data, setData] = useState<UsageAnalyticsResponse | null>(null);
-  const [budget, setBudget] = useState<UsageBudgetResponse | null>(null);
   const [providers, setProviders] = useState<UsageProvidersResponse | null>(null);
   const [providersLoaded, setProvidersLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -813,9 +762,6 @@ export default function UsagePage() {
     setProvidersLoaded(false);
     Promise.all([
       api.getAnalytics(days),
-      // Budget endpoint is built in parallel — a 404 just means "no budget
-      // limits configured"; the section renders placeholders instead.
-      fetchJSON<UsageBudgetResponse>("/api/usage/budget").catch(() => null),
       // Provider spend endpoint is built in parallel — a 404/failure renders
       // the section with a subtle "unavailable" notice instead of failing.
       api
@@ -824,9 +770,8 @@ export default function UsagePage() {
         .catch(() => setProviders(null))
         .finally(() => setProvidersLoaded(true)),
     ])
-      .then(([usage, budgetData]) => {
+      .then(([usage]) => {
         setData(usage);
-        setBudget(budgetData);
       })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
@@ -874,12 +819,14 @@ export default function UsagePage() {
   }, [load]);
 
   const hasUsage = data && (data.daily.length > 0 || data.by_model.length > 0);
+  const providerModels = useMemo(
+    () => mergeProviderModels(providers?.providers ?? []),
+    [providers],
+  );
 
   return (
     <div className="flex flex-col gap-6">
       <PluginSlot name="usage:top" />
-
-      <BudgetSection budget={budget} />
 
       <ProviderUsageSection
         providers={providers?.providers ?? null}
@@ -903,11 +850,11 @@ export default function UsagePage() {
       {data && hasUsage && (
         <>
           <div className="grid gap-6 lg:grid-cols-2">
-            <RequestsByModelChart data={data} />
+            <RequestsByModelBarChart data={providers?.requests_by_model ?? []} />
             <SpendOverTimeChart data={data} />
           </div>
 
-          <ModelCostTable models={data.by_model} />
+          <ModelCostTable models={providerModels} />
 
           <ByTaskList tasks={data.by_task} />
         </>

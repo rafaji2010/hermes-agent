@@ -2127,6 +2127,16 @@ export interface UsageProviderTokens {
   cache_read: number;
 }
 
+/** Per-model usage for a provider (token bars + request counts). */
+export interface UsageProviderModel {
+  model: string;
+  requests: number;
+  input?: number;
+  output?: number;
+  cache_read?: number;
+  cost?: number;
+}
+
 export interface UsageProvider {
   provider: string;
   spend_usd: number | null;
@@ -2137,10 +2147,19 @@ export interface UsageProvider {
   source?: string;
   note?: string;
   error?: string;
+  models?: UsageProviderModel[];
+}
+
+/** One bar in the "Requests by model" chart — colored per provider. */
+export interface UsageRequestModelEntry {
+  model: string;
+  requests: number;
+  provider: string;
 }
 
 export interface UsageProvidersResponse {
   providers: UsageProvider[];
+  requests_by_model?: UsageRequestModelEntry[];
 }
 
 export interface ActiveProfileInfo {
