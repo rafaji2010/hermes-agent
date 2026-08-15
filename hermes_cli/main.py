@@ -485,6 +485,7 @@ from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
 from hermes_cli.subcommands.self_describe import build_self_describe_parser
+from hermes_cli.subcommands.workers import build_workers_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -4943,6 +4944,13 @@ def cmd_self_describe(args):
     from hermes_cli.self_describe import run_self_describe
 
     return run_self_describe(args)
+
+
+def cmd_workers(args):
+    """Worker capability registry (detect fleet harnesses + custom workers)."""
+    from hermes_cli.workers import run_workers_command
+
+    return run_workers_command(args)
 
 
 def cmd_debug(args):
@@ -12697,6 +12705,11 @@ def main():
     # =========================================================================
     build_insights_parser(subparsers, cmd_insights=cmd_insights)
     build_monitoring_parser(subparsers, cmd_monitoring=cmd_monitoring)
+
+    # =========================================================================
+    # workers command  (parser built in hermes_cli/subcommands/workers.py)
+    # =========================================================================
+    build_workers_parser(subparsers, cmd_workers=cmd_workers)
 
     # =========================================================================
     # claw command  (parser built in hermes_cli/subcommands/claw.py)
