@@ -433,6 +433,11 @@ def run_workers_command(args) -> int:
 
         return run_workers_cli_command(args)
 
+    if action in ("route",):
+        from hermes_cli.worker_backend import run_workers_route_command
+
+        return run_workers_route_command(args)
+
     if action in ("benchmark",):
         from hermes_cli.benchmark import run_benchmark_command
 

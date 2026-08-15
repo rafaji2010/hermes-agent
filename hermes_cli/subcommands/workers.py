@@ -130,6 +130,33 @@ def build_workers_parser(subparsers, *, cmd_workers: Callable) -> None:
         help="Provider override for the codex harness",
     )
 
+    _route = workers_subparsers.add_parser(
+        "route",
+        help="Route a task to the best worker using benchmark evidence",
+        description=(
+            "Route a task text to the best installed worker using benchmark "
+            "evidence (§13): infer the benchmark category, score each "
+            "installed worker by its stored pass/fail record (+2 per PASS in "
+            "the category, −1 per FAIL, +0.5 per PASS elsewhere, +1 for a "
+            "capability match), and print the ranked list plus the chosen "
+            "worker — the same selection `hermes workers run` would make. "
+            "Falls back to capability-hint routing when no evidence store "
+            "exists."
+        ),
+    )
+    _route.add_argument("task", help="The task text to route")
+    _route.add_argument(
+        "--capabilities",
+        nargs="+",
+        metavar="capability",
+        help="Required capabilities for routing, e.g. coding testing",
+    )
+    _route.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON instead of the table",
+    )
+
     _benchmark = workers_subparsers.add_parser(
         "benchmark",
         help="Run the worker benchmark suite (categories §24, metrics §25)",

@@ -11,9 +11,15 @@ Routing (§13) is evidence-driven: the task text is scanned for capability
 hints ("architecture/reasoning" → pi, "implement/code" → codex/opencode,
 "test" → opencode, "review" → commandcode, "long-horizon/deep" → dsh), the
 hints are intersected with the installed-fleet capability map, and the best
-installed worker wins. This backend complements Hermes' internal
-``delegate_task`` subagents — it drives *external* harnesses as separate
-processes, it does not replace the built-in delegation tool.
+installed worker wins. When benchmark evidence exists
+(``<HERMES_HOME>/benchmark_results.json``, written by ``hermes workers
+benchmark``), the router instead scores each installed worker by its stored
+pass/fail record for the task's inferred category (+2 per PASS, −1 per FAIL,
++0.5 per PASS elsewhere, +1 for a capability match) and picks the highest
+score — falling back to the capability hints only when no worker has any
+evidence. This backend complements Hermes' internal ``delegate_task``
+subagents — it drives *external* harnesses as separate processes, it does not
+replace the built-in delegation tool.
 
 Design notes:
 
@@ -28,6 +34,7 @@ Design notes:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import select
@@ -37,6 +44,7 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 from hermes_constants import get_hermes_home
 
@@ -678,6 +686,234 @@ ROUTING_RULES: list[RoutingRule] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Evidence-driven scoring (§13)
+# ---------------------------------------------------------------------------
+#
+# When benchmark evidence exists, each installed worker is scored for the
+# task's inferred category: +2 per PASS in that category, −1 per FAIL there,
+# +0.5 per PASS in any other category (general reliability), and +1 when the
+# worker's capabilities contain the category's implied capability. The
+# highest score wins; ties break on lower latency, then capability-hint order.
+
+#: Keyword → evidence-category rules. The first rule whose pattern matches the
+#: task text wins; every category is the name under which ``hermes workers
+#: benchmark`` stores its evidence (see ``hermes_cli/benchmark.py``).
+_EVIDENCE_CATEGORY_RULES: tuple[tuple[re.Pattern, str], ...] = (
+    (
+        re.compile(r"\b(review|code review|pr review|audit|critique|feedback)\b", re.IGNORECASE),
+        "review",
+    ),
+    (
+        re.compile(
+            r"\b(architecture|architect|explain|understand|summary|summariz|"
+            r"research|analy[sz]|design|whiteboard)\b",
+            re.IGNORECASE,
+        ),
+        "repository_understanding",
+    ),
+    (
+        re.compile(r"\b(fix|bug|debug|defect|failing)\b", re.IGNORECASE),
+        "recovery",
+    ),
+    (
+        re.compile(r"\b(test|tests|testing|unit test|regression|verify)\b", re.IGNORECASE),
+        "coding",
+    ),
+    (
+        re.compile(
+            r"\b(long[- ]horizon|multi[- ]step|long[- ]running|autonomous|deep dive)\b",
+            re.IGNORECASE,
+        ),
+        "long_horizon",
+    ),
+    (
+        re.compile(r"\b(tool|shell|terminal|run|execute|script|command line)\b", re.IGNORECASE),
+        "tool_heavy",
+    ),
+    (
+        re.compile(r"\b(multi[- ]file|module(?:s)?|multiple files)\b", re.IGNORECASE),
+        "multi_file",
+    ),
+    (
+        re.compile(r"\b(context|long document|document|read the)\b", re.IGNORECASE),
+        "context_heavy",
+    ),
+)
+
+#: Alias sets for evidence-category matching — lets an inferred category match
+#: benchmark records stored under a nearby name. The store uses the §24
+#: category names, and ``repository_understanding`` is the §13 label for the
+#: §24 ``repository`` category.
+_EVIDENCE_CATEGORY_ALIASES: dict[str, frozenset[str]] = {
+    "repository_understanding": frozenset({"repository_understanding", "repository"}),
+    "context_heavy": frozenset({"context_heavy", "context"}),
+    "tool_heavy": frozenset({"tool_heavy", "tool"}),
+    "multi_file": frozenset({"multi_file", "multifile"}),
+}
+
+#: §13 capability implied by each evidence category — the +1 capability-match
+#: bonus applies when an installed worker declares it.
+_CATEGORY_CAPABILITIES: dict[str, str] = {
+    "coding": "coding",
+    "review": "review",
+    "repository_understanding": "repository_reasoning",
+    "recovery": "implementation",
+    "long_horizon": "long_horizon",
+    "tool_heavy": "coding",
+    "multi_file": "implementation",
+    "context_heavy": "reasoning",
+}
+
+
+def infer_evidence_category(task_text: str) -> str:
+    """Map task text to the §13 evidence category (default: ``coding``)."""
+    lowered = task_text.lower() if task_text else ""
+    for pattern, category in _EVIDENCE_CATEGORY_RULES:
+        if pattern.search(lowered):
+            return category
+    return "coding"
+
+
+def _evidence_category_matches(inferred: str, record_category) -> bool:
+    """Does a stored evidence record's category satisfy an inferred category?"""
+    inferred_lower = inferred.lower()
+    record_lower = str(record_category or "").lower()
+    if record_lower == inferred_lower:
+        return True
+    return record_lower in _EVIDENCE_CATEGORY_ALIASES.get(inferred_lower, frozenset())
+
+
+def _evidence_counts(
+    worker: str, category: str, evidence: list[dict]
+) -> dict:
+    """Tally one worker's pass/fail evidence against an inferred category."""
+    passes = fails = other_passes = 0
+    category_latencies: list[float] = []
+    all_latencies: list[float] = []
+
+    def _is_number(value) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+    for record in evidence:
+        if record.get("worker") != worker:
+            continue
+        latency = record.get("latency_s")
+        if _is_number(latency):
+            all_latencies.append(float(latency))
+        is_pass = bool(record.get("pass"))
+        if _evidence_category_matches(category, record.get("category")):
+            if _is_number(latency):
+                category_latencies.append(float(latency))
+            if is_pass:
+                passes += 1
+            else:
+                fails += 1
+        elif is_pass:
+            other_passes += 1
+
+    def _average(values: list[float]) -> float | None:
+        return sum(values) / len(values) if values else None
+
+    return {
+        "passes": passes,
+        "fails": fails,
+        "other_passes": other_passes,
+        "category_latency": _average(category_latencies),
+        "latency": _average(all_latencies),
+    }
+
+
+def score_workers(
+    task_text: str,
+    capabilities_required: list[str] | None = None,
+    evidence: list[dict] | None = None,
+    hermes_home=None,
+) -> list[dict]:
+    """Score every installed worker against benchmark evidence, best first.
+
+    Returns one dict per installed worker, sorted by descending score, then
+    ascending latency, then capability-hint order:
+
+      ``{"worker", "category", "score", "evidence", "latency"}``
+
+    Scoring (§13): +2 per PASS in the inferred category, −1 per FAIL there,
+    +0.5 per PASS in any other category, and +1 when the worker's capabilities
+    contain the category's implied capability. ``latency`` is the worker's
+    mean category latency (falling back to its overall mean) — the tie-break.
+    When a ``capabilities_required`` filter is given it is applied leniently
+    (unchanged ranking stands if no worker qualifies), mirroring
+    ``rank_workers``.
+    """
+    hermes_home = hermes_home or get_hermes_home()
+    installed = sorted(
+        set(workers.detect_workers(hermes_home)) | set(workers._read_custom_workers(hermes_home))
+    )
+    if not installed:
+        return []
+    evidence = evidence or []
+    category = infer_evidence_category(task_text)
+    capability = _CATEGORY_CAPABILITIES.get(category, "coding")
+    hint_order = {
+        name: index for index, name in enumerate(rank_workers(task_text, None, hermes_home))
+    }
+
+    scored: list[dict] = []
+    for name in installed:
+        counts = _evidence_counts(name, category, evidence)
+        score = (
+            2 * counts["passes"]
+            - counts["fails"]
+            + 0.5 * counts["other_passes"]
+            + (1 if capability in _capabilities_for(name, hermes_home) else 0)
+        )
+        latency = (
+            counts["category_latency"] if counts["category_latency"] is not None else counts["latency"]
+        )
+        scored.append(
+            {
+                "worker": name,
+                "category": category,
+                "score": round(score, 3),
+                "evidence": {
+                    "passes": counts["passes"],
+                    "fails": counts["fails"],
+                    "other_passes": counts["other_passes"],
+                },
+                "latency": latency,
+            }
+        )
+
+    if capabilities_required:
+        required = set(capabilities_required)
+        qualified = [
+            entry
+            for entry in scored
+            if _covers(_capabilities_for(entry["worker"], hermes_home), required)
+        ]
+        if qualified:
+            scored = qualified
+
+    scored.sort(
+        key=lambda entry: (
+            -entry["score"],
+            entry["latency"] if entry["latency"] is not None else float("inf"),
+            hint_order.get(entry["worker"], len(hint_order)),
+        )
+    )
+    return scored
+
+
+def _has_evidence(scored: list[dict]) -> bool:
+    """True when any scored worker has pass/fail evidence behind its score."""
+    return any(
+        entry["evidence"]["passes"]
+        or entry["evidence"]["fails"]
+        or entry["evidence"]["other_passes"]
+        for entry in scored
+    )
+
+
 class WorkerBackendError(RuntimeError):
     """Raised when a task cannot be routed to any installed worker."""
 
@@ -754,9 +990,22 @@ def rank_workers(
 def route_task(
     task_text: str,
     capabilities_required: list[str] | None = None,
+    evidence: list[dict] | None = None,
     hermes_home=None,
 ) -> str:
-    """Route a task to the best installed worker type (§13)."""
+    """Route a task to the best installed worker type (§13).
+
+    With benchmark ``evidence`` (see ``benchmark.load_results``), each
+    installed worker is scored against the task's inferred category (see
+    ``score_workers``) and the highest score wins — ties break on lower
+    latency, then the capability-hint order. When no worker has any evidence
+    (or ``evidence`` is None/empty), falls back to the capability-hint routing
+    (unchanged behavior).
+    """
+    if evidence:
+        scored = score_workers(task_text, capabilities_required, evidence, hermes_home)
+        if _has_evidence(scored):
+            return scored[0]["worker"]
     ranked = rank_workers(task_text, capabilities_required, hermes_home)
     if not ranked:
         raise WorkerBackendError(
@@ -860,12 +1109,18 @@ def run_workers_cli_command(args) -> int:
             )
             return 1
     else:
+        evidence, evidence_path = _load_routing_evidence(hermes_home)
         try:
-            worker_type = route_task(task, capabilities_required, hermes_home)
+            worker_type = route_task(task, capabilities_required, evidence, hermes_home)
         except WorkerBackendError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         ranked = rank_workers(task, capabilities_required, hermes_home)
+        if evidence:
+            print(
+                f"[evidence] routing from {evidence_path} "
+                f"({len(evidence)} benchmark record(s))"
+            )
         print(f"Routed to worker '{worker_type}' (ranked: {', '.join(ranked)})")
 
     if worker_type == "dsh":
@@ -928,3 +1183,136 @@ def run_workers_cli_command(args) -> int:
             print(final["result"], file=sys.stderr)
 
     return 1
+
+
+# ---------------------------------------------------------------------------
+# Evidence loading + `hermes workers route` (§13)
+# ---------------------------------------------------------------------------
+
+
+def _load_routing_evidence(hermes_home) -> tuple[list[dict] | None, Path]:
+    """Load the routing-evidence store if it exists.
+
+    Returns ``(evidence_or_None, store_path)`` — evidence is None when no
+    store exists yet, so callers fall back to capability-hint routing.
+    """
+    from hermes_cli.benchmark import benchmark_results_path, load_results
+
+    store_path = benchmark_results_path(hermes_home)
+    if not store_path.is_file():
+        return None, store_path
+    return load_results(path=store_path), store_path
+
+
+def _fmt_latency(latency) -> str:
+    return f"{latency:.1f}s" if isinstance(latency, (int, float)) else "—"
+
+
+def _fmt_evidence(counts: dict) -> str:
+    parts = []
+    if counts.get("passes"):
+        parts.append(f"{counts['passes']} pass")
+    if counts.get("fails"):
+        parts.append(f"{counts['fails']} fail")
+    if counts.get("other_passes"):
+        parts.append(f"{counts['other_passes']} other pass")
+    return ", ".join(parts) if parts else "no evidence"
+
+
+def _print_route_table(
+    task: str,
+    chosen: str,
+    store_path: Path,
+    evidence: list[dict] | None,
+    display: list[dict],
+) -> None:
+    print(f"task:        {task}")
+    category = display[0]["category"] if display else infer_evidence_category(task)
+    print(f"category:    {category}")
+    if evidence:
+        print(f"evidence:    {store_path} ({len(evidence)} record(s))")
+    else:
+        print("evidence:    none — capability-hint routing")
+
+    headers = ("WORKER", "SCORE", "LATENCY", "EVIDENCE")
+    rows = [
+        (
+            entry["worker"],
+            f"{entry['score']:g}",
+            _fmt_latency(entry.get("latency")),
+            _fmt_evidence(entry["evidence"]),
+        )
+        for entry in display
+    ]
+    all_rows = [headers, *rows]
+    widths = [max(len(str(row[i])) for row in all_rows) for i in range(len(headers))]
+    for index, row in enumerate(all_rows):
+        print("  ".join(str(row[j]).ljust(widths[j]) for j in range(len(headers))).rstrip())
+        if index == 0:
+            print("  ".join("-" * w for w in widths))
+    print()
+    print(f"chosen: {chosen}")
+
+
+def run_workers_route_command(args) -> int:
+    """``hermes workers route <task>`` — preview the evidence-driven routing.
+
+    Prints the inferred benchmark category, the scored worker ranking, and the
+    chosen worker — the same selection ``hermes workers run`` would make.
+    With ``--json`` emits the same information as structured JSON. Returns the
+    process exit code.
+    """
+    task = getattr(args, "task", None) or ""
+    if not task.strip():
+        print("error: task must not be empty", file=sys.stderr)
+        return 1
+    hermes_home = get_hermes_home()
+    capabilities_required = list(getattr(args, "capabilities", None) or [])
+    as_json = bool(getattr(args, "json", False))
+
+    evidence, store_path = _load_routing_evidence(hermes_home)
+    try:
+        chosen = route_task(task, capabilities_required, evidence, hermes_home)
+    except WorkerBackendError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    scored = score_workers(task, capabilities_required, evidence, hermes_home)
+    evidence_used = _has_evidence(scored)
+    if evidence_used:
+        display = scored
+    else:
+        display = [
+            {
+                "worker": name,
+                "category": infer_evidence_category(task),
+                "score": 0.0,
+                "evidence": {"passes": 0, "fails": 0, "other_passes": 0},
+                "latency": None,
+            }
+            for name in rank_workers(task, capabilities_required, hermes_home)
+        ]
+
+    payload = {
+        "task": task,
+        "category": infer_evidence_category(task),
+        "chosen": chosen,
+        "evidence_used": evidence_used,
+        "evidence_file": str(store_path),
+        "evidence_count": len(evidence or []),
+        "workers": [
+            {
+                "worker": entry["worker"],
+                "score": entry["score"],
+                "latency": entry["latency"],
+                "evidence": entry["evidence"],
+            }
+            for entry in display
+        ],
+    }
+
+    if as_json:
+        print(json.dumps(payload, indent=2, default=str))
+    else:
+        _print_route_table(task, chosen, store_path, evidence, display)
+    return 0

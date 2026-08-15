@@ -23,7 +23,9 @@ derivable from the prompt alone).
 Metrics recorded per worker per task (§25): completion (expected marker
 present), correctness (expected value present), tokens consumed (parsed from
 the harness output when it reports them), latency (seconds), and failure mode
-(``timeout`` / ``error`` / ``wrong-output``).
+(``timeout`` / ``error`` / ``wrong-output``). Results persist to
+``<HERMES_HOME>/benchmark_results.json`` (see ``save_results`` /
+``load_results``) — the routing evidence the ``route_task`` scorer consumes.
 
 Stdlib only. State paths go through ``get_hermes_home()``; never hardcode
 ``~/.hermes``.
@@ -37,6 +39,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -50,6 +53,10 @@ from hermes_cli import workers
 
 #: Per-task timeout in seconds (§24).
 DEFAULT_TIMEOUT = 120
+
+#: Routing-evidence store filename inside HERMES_HOME (§13). Persisted by
+#: ``save_results`` and read by the evidence-aware router.
+BENCHMARK_STORE = "benchmark_results.json"
 
 #: Default workers for a benchmark run (§24) — dsh is skipped unless
 #: explicitly requested (experimental).
@@ -338,6 +345,10 @@ CATEGORIES: tuple[BenchmarkCategory, ...] = (
 
 _CATEGORY_KEYS = {cat.key.lower(): cat for cat in CATEGORIES}
 
+#: Category key → canonical name (``"B"`` → ``"coding"``). Used to normalize
+#: §25 result records into routing-evidence records.
+_CATEGORY_NAMES: dict[str, str] = {cat.key: cat.name for cat in CATEGORIES}
+
 
 def _match_category(part: str) -> BenchmarkCategory | None:
     """Resolve one ``--category`` token (key, name, or alias)."""
@@ -485,6 +496,112 @@ def run_benchmarks(
             for task in category.tasks:
                 results.append(run_task_benchmark(worker, task, timeout))
     return results
+
+
+# ---------------------------------------------------------------------------
+# Routing-evidence store (§13)
+# ---------------------------------------------------------------------------
+#
+# Benchmark results persist to <HERMES_HOME>/benchmark_results.json so the
+# router can prefer workers with proven success for a task's category instead
+# of relying on capability intuition alone. The store is a JSON document:
+#
+#   {"generated_at": "...", "results": [
+#       {"worker": "opencode", "category": "coding", "task": "B/is_prime",
+#        "pass": true, "latency_s": 13.0, "tokens": null, "failure_mode": null}
+#   ]}
+
+
+def benchmark_results_path(hermes_home: Path | None = None) -> Path:
+    """Path to the routing-evidence store (profile-aware)."""
+    return (hermes_home or get_hermes_home()) / BENCHMARK_STORE
+
+
+def _now_iso() -> str:
+    """Current UTC timestamp in ISO-8601 form."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _evidence_record(record: dict) -> dict:
+    """Normalize a §25 benchmark result (or stored record) into evidence shape.
+
+    A §25 result carries ``category`` as the category *key* (``"B"``) and
+    ``task`` as the bare task name (``"is_prime"``); the evidence store uses
+    the category *name* (``"coding"``) and a ``key/task`` composite
+    (``"B/is_prime"``). Already-normalized records pass through unchanged, so
+    ``save_results(load_results(...))`` round-trips idempotently.
+    """
+    category = str(record.get("category") or "")
+    task = str(record.get("task") or "")
+    if category in _CATEGORY_NAMES:
+        normalized_category = _CATEGORY_NAMES[category]
+        task = f"{category}/{task}"
+    else:
+        normalized_category = category
+    if "pass" in record:
+        passed = bool(record.get("pass"))
+    else:
+        passed = bool(record.get("completed") and record.get("correct"))
+    latency = record.get("latency_s") if "latency_s" in record else record.get("latency")
+    failure = record.get("failure_mode") if "failure_mode" in record else record.get("failure")
+    return {
+        "worker": record.get("worker"),
+        "category": normalized_category,
+        "task": task,
+        "pass": passed,
+        "latency_s": latency,
+        "tokens": record.get("tokens"),
+        "failure_mode": failure,
+    }
+
+
+def _result_key(record: dict) -> tuple[str, str]:
+    """The dedupe key for an evidence record: (worker, task)."""
+    return (str(record.get("worker") or ""), str(record.get("task") or ""))
+
+
+def _merge_results(existing: list[dict], new: list[dict]) -> list[dict]:
+    """Merge evidence lists — per (worker, task) the newer record wins.
+
+    Order is preserved: existing records keep their position, and brand-new
+    (worker, task) pairs append at the end.
+    """
+    merged: dict[tuple[str, str], dict] = {}
+    for record in existing:
+        merged[_result_key(record)] = record
+    for record in new:
+        normalized = _evidence_record(record)
+        merged[_result_key(normalized)] = normalized
+    return list(merged.values())
+
+
+def load_results(path: str | Path | None = None) -> list[dict]:
+    """Read the routing-evidence store; returns the results list ([] if missing)."""
+    store_path = Path(path) if path else benchmark_results_path()
+    try:
+        raw = json.loads(store_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    results = raw.get("results") if isinstance(raw, dict) else None
+    if not isinstance(results, list):
+        return []
+    return [record for record in results if isinstance(record, dict)]
+
+
+def save_results(results: list[dict], path: str | Path | None = None) -> Path:
+    """Persist benchmark evidence to ``path`` (default the HERMES_HOME store).
+
+    Merges ``results`` into whatever is already stored — a new record for a
+    (worker, task) pair replaces the older one, so re-running a benchmark
+    refreshes its evidence instead of accumulating stale entries. Returns the
+    path written.
+    """
+    store_path = Path(path) if path else benchmark_results_path()
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = load_results(path=store_path)
+    payload = {"generated_at": _now_iso(), "results": _merge_results(existing, results)}
+    store_path.write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")
+    return store_path
 
 
 # ---------------------------------------------------------------------------
@@ -684,6 +801,17 @@ def run_benchmark_command(args) -> int:
 
     results = run_benchmarks(worker_types, categories, timeout)
     payload = build_payload(worker_types, categories, timeout, results)
+
+    # Routing evidence (§13): always refresh the HERMES_HOME store so the
+    # evidence-aware router sees the latest results. Best-effort — a
+    # read-only store must not fail the run.
+    try:
+        save_results(results)
+    except OSError as exc:
+        print(
+            f"warning: cannot write routing evidence to {benchmark_results_path()}: {exc}",
+            file=sys.stderr,
+        )
 
     if out_path:
         try:
