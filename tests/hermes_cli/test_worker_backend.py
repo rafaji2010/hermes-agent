@@ -361,7 +361,6 @@ def test_worker_config_does_not_forward_global_hermes_model(tmp_path):
 def _backend_with_fake(worker_type="opencode", **proc_kwargs):
     proc = FakeProc(**proc_kwargs)
     stack = patch.object(backend.subprocess, "Popen", return_value=proc)
-    stack.start()
     return backend.get_backend(worker_type), proc, stack
 
 

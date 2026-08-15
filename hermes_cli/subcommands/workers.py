@@ -37,12 +37,31 @@ def build_workers_parser(subparsers, *, cmd_workers: Callable) -> None:
 
     _status = workers_subparsers.add_parser(
         "status",
-        help="List workers plus their Herdr integration status",
+        help="List workers, live executions, and (with --all) recent history",
+        description=(
+            "Report the installed workers and their Herdr integration status, "
+            "then the currently running/blocked executions (§28 — worker, "
+            "task, execution id, status, elapsed) from the mirrored live "
+            "registry. With --all, also list the most recent completed/failed "
+            "executions from the persisted history (§30), --limit N controls "
+            "the count (default 10)."
+        ),
     )
     _status.add_argument(
         "--json",
         action="store_true",
         help="Emit machine-readable JSON instead of the table",
+    )
+    _status.add_argument(
+        "--all",
+        action="store_true",
+        help="Also show recent completed/failed executions from the persisted history",
+    )
+    _status.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help="Number of history entries to show with --all (default: 10)",
     )
 
     _add = workers_subparsers.add_parser(
@@ -128,6 +147,24 @@ def build_workers_parser(subparsers, *, cmd_workers: Callable) -> None:
         "--provider",
         default="",
         help="Provider override for the codex harness",
+    )
+
+    _resume = workers_subparsers.add_parser(
+        "resume",
+        help="Resume or re-issue a previous worker execution",
+        description=(
+            "Recover a worker execution (§30): re-attach a still-in-flight "
+            "execution whose harness supports a --resume/--continue flag "
+            "(pi, codex, opencode, commandcode); mark a vanished execution "
+            "FAILED (interrupted) and offer the task text to re-run via "
+            "`hermes workers run`; and for harnesses without a resume flag, "
+            "honestly re-issue the task as a fresh run, reporting the new "
+            "execution id."
+        ),
+    )
+    _resume.add_argument(
+        "execution_id",
+        help="The execution id to resume (from `hermes workers status` live/history output)",
     )
 
     _route = workers_subparsers.add_parser(
