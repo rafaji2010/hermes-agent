@@ -36,15 +36,17 @@ class _FakeOpenRouterResponse:
 
 
 def test_openrouter_fetch_mapping(monkeypatch):
-    """OpenRouter credits response maps total_usage→spend, total_credits→remaining."""
+    """OpenRouter auth/key + credits responses map monthly usage + credits."""
     from hermes_cli import web_server
 
-    captured = {}
+    urls = []
 
     def _fake_get(url, *, headers, timeout):
-        captured["url"] = url
-        captured["headers"] = headers
-        captured["timeout"] = timeout
+        urls.append(url)
+        if "auth/key" in url:
+            return _FakeOpenRouterResponse({
+                "data": {"usage": 7.83, "usage_monthly": 0.0643, "usage_weekly": 0.0643, "usage_daily": 0.0}
+            })
         return _FakeOpenRouterResponse({"data": {"total_credits": 35, "total_usage": 7.83}})
 
     monkeypatch.setattr(web_server.httpx, "get", _fake_get)
@@ -52,14 +54,17 @@ def test_openrouter_fetch_mapping(monkeypatch):
 
     result = web_server._get_openrouter_usage(None)
 
-    assert captured["url"] == "https://openrouter.ai/api/v1/credits"
-    assert captured["headers"]["Authorization"] == "Bearer sk-or-test"
-    assert captured["timeout"] == 8.0
+    assert urls == [
+        "https://openrouter.ai/api/v1/auth/key",
+        "https://openrouter.ai/api/v1/credits",
+    ]
     assert result == {
         "provider": "openrouter",
-        "spend_usd": 7.83,
+        "spend_usd": 0.0643,  # monthly — matches OpenRouter dashboard
+        "spend_weekly": 0.0643,
+        "spend_daily": 0.0,
         "credits_remaining": 35.0,
-        "period": "billing-month",
+        "period": "last-30-days",
         "source": "api",
     }
 
@@ -477,6 +482,10 @@ def test_openrouter_per_model_split(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
 
     def _fake_get(url, *, headers, timeout):
+        if "auth/key" in url:
+            return _FakeOpenRouterResponse(
+                {"data": {"usage": 7.83, "usage_monthly": 2.0, "usage_weekly": 1.0, "usage_daily": 0.5}}
+            )
         return _FakeOpenRouterResponse(
             {"data": {"total_credits": 35, "total_usage": 7.83}}
         )
@@ -507,13 +516,14 @@ def test_openrouter_per_model_split(monkeypatch):
 
     result = web_server._get_openrouter_usage(None)
 
-    assert result["spend_usd"] == 7.83
+    # Monthly (not all-time) spend is what the dashboard shows.
+    assert result["spend_usd"] == 2.0
     assert result["credits_remaining"] == 35.0
     # Spend split proportionally to local estimated cost (75% / 25%).
     assert result["models"][0]["model"] == "deepseek-chat"
-    assert result["models"][0]["cost"] == pytest.approx(7.83 * 0.75, abs=1e-3)
+    assert result["models"][0]["cost"] == pytest.approx(2.0 * 0.75, abs=1e-3)
     assert result["models"][1]["model"] == "claude-sonnet"
-    assert result["models"][1]["cost"] == pytest.approx(7.83 * 0.25, abs=1e-3)
+    assert result["models"][1]["cost"] == pytest.approx(2.0 * 0.25, abs=1e-3)
     assert result["tokens"] == {"input": 1200, "output": 600}
     assert "estimated" in result["note"]
 

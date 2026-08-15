@@ -15095,21 +15095,38 @@ def _get_openrouter_usage(profile: Optional[str]) -> Dict[str, Any]:
     if not key:
         return {"provider": "openrouter", "error": "no key"}
     try:
+        # Monthly spend (per-key): /auth/key returns usage_monthly — the real
+        # number OpenRouter's own dashboard shows for this key's last-30-days
+        # usage. /credits total_usage is ALL-TIME (misleading for a monthly
+        # view), so it is used only for credits remaining, not spend.
         resp = httpx.get(
-            "https://openrouter.ai/api/v1/credits",
+            "https://openrouter.ai/api/v1/auth/key",
             headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
             timeout=8.0,
         )
         resp.raise_for_status()
-        data = (resp.json() or {}).get("data") or {}
-        total_usage = float(data.get("total_usage") or 0.0)
-        total_credits = float(data.get("total_credits") or 0.0)
+        auth_data = (resp.json() or {}).get("data") or {}
+        usage_monthly = float(auth_data.get("usage_monthly") or 0.0)
+        usage_weekly = float(auth_data.get("usage_weekly") or 0.0)
+        usage_daily = float(auth_data.get("usage_daily") or 0.0)
+
+        # Credits remaining from /credits (all-time account state).
+        credits_resp = httpx.get(
+            "https://openrouter.ai/api/v1/credits",
+            headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
+            timeout=8.0,
+        )
+        credits_resp.raise_for_status()
+        credits_data = (credits_resp.json() or {}).get("data") or {}
+        total_credits = float(credits_data.get("total_credits") or 0.0)
 
         entry: Dict[str, Any] = {
             "provider": "openrouter",
-            "spend_usd": round(total_usage, 4),
+            "spend_usd": round(usage_monthly, 4),
+            "spend_weekly": round(usage_weekly, 4),
+            "spend_daily": round(usage_daily, 4),
             "credits_remaining": round(total_credits, 4),
-            "period": "billing-month",
+            "period": "last-30-days",
             "source": "api",
         }
         models = _openrouter_session_models(profile)
@@ -15129,7 +15146,7 @@ def _get_openrouter_usage(profile: Optional[str]) -> Dict[str, Any]:
                     "requests": m["requests"],
                     "input": m["input"],
                     "output": m["output"],
-                    "cost": round(total_usage * share, 6),
+                    "cost": round(usage_monthly * share, 6),
                 })
             entry["tokens"] = {
                 "input": sum(m["input"] for m in models),
