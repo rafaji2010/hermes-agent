@@ -68,6 +68,7 @@ export const ar = defineLocale({
     },
     nav: {
       analytics: "التحليلات",
+      usage: "Usage",
       chat: "المحادثة",
       config: "الإعدادات",
       cron: "المهام المجدولة",
