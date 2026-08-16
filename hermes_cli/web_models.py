@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator
 
 
 # --- from web_server.py (originally lines 1273-1372) ---
@@ -731,7 +731,8 @@ class _PluginProvidersPutBody(BaseModel):
 
 
 class FleetRunRequest(BaseModel):
-    task: str
+    # max_length guards abuse; blank/whitespace handled by fleet_run's own 400.
+    task: str = Field(..., max_length=2000)
     worker: Optional[str] = None
 
 
