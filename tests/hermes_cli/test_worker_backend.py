@@ -266,23 +266,11 @@ def test_pi_command_falls_back_to_interactive_when_no_flag():
         assert inst._build_command(WorkerSpec(worker_type="pi", task="hello")) == ["pi", "hello"]
 
 
-def test_codex_command_uses_model_provider_and_danger_sandbox():
+def test_codex_command_uses_verify_wrapper():
     inst = backend.CodexBackend()
-    spec = WorkerSpec(
-        worker_type="codex", task="fix it", constraints={"model": "gpt-x", "provider": "openai"}
-    )
+    spec = WorkerSpec(worker_type="codex", task="verify the diff", workspace="/tmp/ws")
     command = inst._build_command(spec)
-    assert command == [
-        "codex",
-        "exec",
-        "-c",
-        "model_provider=openai",
-        "-m",
-        "gpt-x",
-        "--sandbox",
-        "danger-full-access",
-        "fix it",
-    ]
+    assert command == ["codex-verify.sh", "verify the diff", "/tmp/ws"]
 
 
 def test_opencode_command_uses_auto_and_model():
@@ -300,12 +288,12 @@ def test_commandcode_command_resolves_nvm_binary():
     assert command == [str(resolved), "-p", "--yolo", "review"]
 
 
-def test_dsh_command_marks_profile_web():
+def test_dsh_command_marks_profile_headless():
     inst = backend.DshBackend()
     assert inst._build_command(WorkerSpec(worker_type="dsh", task="deep dive")) == [
         "dsh",
         "--profile",
-        "web",
+        "headless",
         "deep dive",
     ]
 
