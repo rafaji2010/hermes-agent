@@ -1413,7 +1413,7 @@ def scan_task_dependencies(task_text: str, workspace: str = "") -> dict:
 
 def can_parallelize(tasks: list[dict]) -> dict:
     """Decide whether tasks can run in parallel based on file overlap (§11)."""
-    file_to_tasks: dict[tuple[str, str], list[int]] = {}
+    file_to_tasks: dict[object, list[int]] = {}
     task_files: list[list[str]] = []
     for idx, t in enumerate(tasks):
         text = t.get("task_text") or t.get("task") or ""
@@ -1429,7 +1429,8 @@ def can_parallelize(tasks: list[dict]) -> dict:
         # Normalize paths for overlap: resolve relative to the task workspace
         # and use (workspace, normalized) as the collision key so "./auth.py"
         # == "auth.py" == "src/auth.py" (same resolved file), while the same
-        # basename in different workspaces does NOT collide.
+        # basename in different workspaces does NOT collide. Absolute paths
+        # are keyed by norm alone (they are workspace-independent).
         normalized: list[str] = []
         for f in files:
             cand = Path(f) if Path(f).is_absolute() else (base / f)
@@ -1439,14 +1440,20 @@ def can_parallelize(tasks: list[dict]) -> dict:
                 norm = (base / f).as_posix().lstrip("./")
             normalized.append(norm)
         task_files.append(existing)
-        for norm in normalized:
-            file_to_tasks.setdefault((ws, norm), []).append(idx)
+        for f_orig, norm in zip(files, normalized):
+            key = norm if Path(f_orig).is_absolute() else (ws, norm)
+            file_to_tasks.setdefault(key, []).append(idx)
 
-    shared: list[tuple[str, str]] = [
+    shared: list[object] = [
         f for f, idxs in file_to_tasks.items() if len(idxs) > 1
     ]
     if shared:
-        shared_names = sorted({os.path.basename(f) for _, f in shared})
+        def _path_of(k: object) -> str:
+            if isinstance(k, tuple):
+                return str(k[-1])
+            return str(k)
+
+        shared_names = sorted({os.path.basename(_path_of(f)) for f in shared})
         return {
             "parallel": False,
             "reason": f"shared files: {shared_names}",
