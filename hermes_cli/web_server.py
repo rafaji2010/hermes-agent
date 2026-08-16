@@ -2671,6 +2671,23 @@ async def fleet_run(request: Request, body: FleetRunRequest):
         execution_id = backend.start(spec)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+    # Completion watcher: the backend instance is per-request, so poll its
+    # process until terminal so the live registry transitions DONE/FAILED
+    # even after this request returns (the dashboard shows real states).
+    import threading
+
+    def _watch() -> None:
+        try:
+            while True:
+                backend._update_status(execution_id)
+                exec_ = backend._executions.get(execution_id)
+                if exec_ is None or exec_.status in _wb._TERMINAL_STATUSES:
+                    break
+                time.sleep(1.0)
+        except Exception:
+            pass
+
+    threading.Thread(target=_watch, daemon=True).start()
     # Prime the event feed so the new execution appears on next poll
     try:
         _fleet_collect_events()
