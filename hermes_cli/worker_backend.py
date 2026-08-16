@@ -790,12 +790,17 @@ class CommandCodeBackend(SubprocessBackend):
 
 
 class DshBackend(SubprocessBackend):
-    """``dsh --profile web "<task>"`` — experimental deep-reasoning harness."""
+    """``dsh --profile headless "<task>"`` — experimental deep-reasoning harness.
+
+    Uses the headless profile (one task, print result, exit) — the web profile
+    boots the web UI and does not accept a task. Provider: opencode-go gateway
+    (see ~/.dsh/settings.yaml) — commandcode's Provider API 401s on Go plan.
+    """
 
     worker_type = "dsh"
 
     def _build_command(self, request: WorkerSpec) -> list[str]:
-        return ["dsh", "--profile", "web", request.task]
+        return ["dsh", "--profile", "headless", request.task]
 
 
 #: Per-type backend registry.
