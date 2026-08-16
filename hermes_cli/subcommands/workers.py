@@ -148,6 +148,16 @@ def build_workers_parser(subparsers, *, cmd_workers: Callable) -> None:
         default="",
         help="Provider override for the codex harness",
     )
+    _run.add_argument(
+        "--risk-aware",
+        action="store_true",
+        help="Enable risk/confidence gating (§10) — refuses human-lane tasks unless --allow-human",
+    )
+    _run.add_argument(
+        "--allow-human",
+        action="store_true",
+        help="Allow human-lane tasks when --risk-aware is set",
+    )
 
     _resume = workers_subparsers.add_parser(
         "resume",
@@ -193,6 +203,11 @@ def build_workers_parser(subparsers, *, cmd_workers: Callable) -> None:
         action="store_true",
         help="Emit machine-readable JSON instead of the table",
     )
+    _route.add_argument(
+        "--risk-aware",
+        action="store_true",
+        help="Enable risk/confidence gating (§10) — prints lane/risk/confidence",
+    )
 
     _benchmark = workers_subparsers.add_parser(
         "benchmark",
@@ -232,6 +247,23 @@ def build_workers_parser(subparsers, *, cmd_workers: Callable) -> None:
         type=int,
         default=120,
         help="Per-task timeout in seconds (default: 120)",
+    )
+
+    _plan = workers_subparsers.add_parser(
+        "plan",
+        help="Analyze parallelism for multiple tasks (§11)",
+        description="Analyze file dependencies across tasks and report whether they can run in parallel.",
+    )
+    _plan.add_argument("tasks", nargs="+", help="Task texts to analyze")
+    _plan.add_argument(
+        "--workspace",
+        default="",
+        help="Workspace directory for file existence checks",
+    )
+    _plan.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON",
     )
 
     workers_parser.set_defaults(func=cmd_workers)

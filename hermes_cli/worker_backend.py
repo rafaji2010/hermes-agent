@@ -1188,11 +1188,138 @@ def rank_workers(
     return ranked
 
 
+# ---------------------------------------------------------------------------
+# Risk/Confidence routing (§10) — triage classifier
+# ---------------------------------------------------------------------------
+
+_RISK_SIGNALS: tuple[str, ...] = (
+    "rm -rf",
+    "delete",
+    "drop table",
+    "truncate",
+    "production",
+    "prod",
+    "secrets",
+    "credentials",
+    "sudo",
+    "chmod 777",
+    "reset",
+    "migrate",
+    "overwrite",
+)
+
+_DEEP_SIGNALS: tuple[str, ...] = (
+    "refactor",
+    "architecture",
+    "design",
+    "database",
+    "migration",
+    "distributed",
+    "security",
+    "optimize",
+    "concurrency",
+    "multi-agent",
+    "orchestrat",
+)
+
+_CHEAP_SIGNALS: tuple[str, ...] = (
+    "rename",
+    "typo",
+    "format",
+    "comment",
+    "docstring",
+    "add a test for",
+    "fix typo",
+    "bump",
+    "small",
+)
+
+_HUMAN_KEYWORDS: tuple[str, ...] = (
+    "deploy",
+    "release",
+    "rollback",
+    "credentials",
+    "api key",
+)
+
+_DEEP_ORDER: tuple[str, ...] = ("commandcode", "codex", "pi", "dsh", "opencode")
+_CHEAP_ORDER: tuple[str, ...] = ("opencode", "pi", "codex", "commandcode", "dsh")
+
+_FILE_EXTS = r"py|js|ts|tsx|go|rs|md|json|yaml|yml|sh|css|html|sql"
+_FILE_RE = re.compile(rf"""(?:["'`])?([\w./-]+\.(?:{_FILE_EXTS}))\b""")
+_QUOTED_FILE_RE = re.compile(rf"""["'`]([^"'`\n]+\.(?:{_FILE_EXTS}))["'`]""")
+
+
+def classify_task(task_text: str) -> dict:
+    """Triage a task into risk/confidence lanes (§10, deterministic, stdlib-only).
+
+    Returns ``{"lane", "confidence", "risk", "reasons"}`` where lane is
+    ``cheap|standard|deep|human`` and risk is ``low|medium|high``.
+    """
+    lowered = (task_text or "").lower()
+    reasons: list[str] = []
+    risk: str = "low"
+    lane: str = "standard"
+    confidence: float = 0.5
+
+    matched_risk: list[str] = []
+    for sig in _RISK_SIGNALS:
+        if sig in lowered:
+            if sig == "prod":
+                if not re.search(r"\bprod\b", lowered) and "production" not in lowered:
+                    continue
+                if "production" in lowered and sig == "prod":
+                    continue
+            matched_risk.append(sig)
+    if matched_risk:
+        risk = "high"
+        reasons.append(f"risk signal: {matched_risk[0]}")
+
+    is_human = False
+    human_reason: str | None = None
+    for kw in _HUMAN_KEYWORDS:
+        if kw in lowered:
+            is_human = True
+            human_reason = kw
+            break
+    if not is_human and risk == "high" and ("production" in lowered or re.search(r"\bprod\b", lowered)):
+        is_human = True
+        human_reason = "production/prod with high risk"
+
+    if is_human:
+        lane = "human"
+        confidence = 0.9
+        if human_reason:
+            reasons.append(f"human signal: {human_reason}")
+        if risk != "high":
+            risk = "high"
+        return {"lane": lane, "confidence": confidence, "risk": risk, "reasons": reasons or [f"human lane: {human_reason}"]}
+
+    matched_deep: list[str] = [s for s in _DEEP_SIGNALS if s in lowered]
+    if matched_deep:
+        lane = "deep"
+        confidence = 0.8
+        reasons.append(f"deep signal: {matched_deep[0]}")
+        return {"lane": lane, "confidence": confidence, "risk": risk, "reasons": reasons}
+
+    matched_cheap: list[str] = [s for s in _CHEAP_SIGNALS if s in lowered]
+    if matched_cheap:
+        lane = "cheap"
+        confidence = 0.85
+        reasons.append(f"cheap signal: {matched_cheap[0]}")
+        return {"lane": lane, "confidence": confidence, "risk": risk, "reasons": reasons}
+
+    if risk == "high":
+        confidence = 0.7
+    return {"lane": lane, "confidence": confidence, "risk": risk, "reasons": reasons or ["default: standard lane"]}
+
+
 def route_task(
     task_text: str,
     capabilities_required: list[str] | None = None,
     evidence: list[dict] | None = None,
     hermes_home=None,
+    risk_aware: bool = False,
 ) -> str:
     """Route a task to the best installed worker type (§13).
 
@@ -1202,7 +1329,45 @@ def route_task(
     latency, then the capability-hint order. When no worker has any evidence
     (or ``evidence`` is None/empty), falls back to the capability-hint routing
     (unchanged behavior).
+
+    With ``risk_aware=True`` (§10) the triage classifier gates routing:
+    human lane returns ``"human"``, deep prefers the strongest harness
+    (commandcode/codex), cheap prefers the cheapest (opencode/pi), otherwise
+    evidence routing is used.
     """
+    if risk_aware:
+        classification = classify_task(task_text)
+        lane = classification.get("lane")
+        if lane == "human":
+            return "human"
+        installed_risk = set(workers.detect_workers(hermes_home)) | set(
+            workers._read_custom_workers(hermes_home)
+        )
+        if not installed_risk:
+            raise WorkerBackendError(
+                "no worker harness installed — run `hermes workers` to see what is available"
+            )
+        if capabilities_required:
+            required = set(capabilities_required)
+            qualified = {
+                w for w in installed_risk if _covers(_capabilities_for(w, hermes_home), required)
+            }
+            if qualified:
+                installed_risk = qualified
+        if lane == "deep":
+            for w in _DEEP_ORDER:
+                if w in installed_risk:
+                    return w
+            for w in sorted(installed_risk):
+                if w not in _DEEP_ORDER:
+                    return w
+        elif lane == "cheap":
+            for w in _CHEAP_ORDER:
+                if w in installed_risk:
+                    return w
+            for w in sorted(installed_risk):
+                if w not in _CHEAP_ORDER:
+                    return w
     if evidence:
         scored = score_workers(task_text, capabilities_required, evidence, hermes_home)
         if _has_evidence(scored):
@@ -1213,6 +1378,105 @@ def route_task(
             "no worker harness installed — run `hermes workers` to see what is available"
         )
     return ranked[0]
+
+
+def scan_task_dependencies(task_text: str, workspace: str = "") -> dict:
+    """Extract file paths from task text and classify overlap risk (§11)."""
+    text = task_text or ""
+    found: list[str] = []
+    seen: set[str] = set()
+    for pat in (_QUOTED_FILE_RE, _FILE_RE):
+        for m in pat.finditer(text):
+            p = m.group(1).strip()
+            if p not in seen:
+                seen.add(p)
+                found.append(p)
+    existing: list[str] = []
+    base = Path(workspace) if workspace else Path.cwd()
+    for p in found:
+        cand = Path(p) if Path(p).is_absolute() else (base / p)
+        if cand.is_file():
+            existing.append(p)
+    if not found:
+        overlap: str = "unknown"
+    elif existing and len(existing) < len(found):
+        overlap = "unknown"
+    elif existing:
+        overlap = "none"
+    else:
+        overlap = "none" if found else "unknown"
+    if not found:
+        overlap = "unknown"
+    elif existing:
+        overlap = "none"
+    else:
+        overlap = "none"
+        for p in found:
+            cand = Path(p) if Path(p).is_absolute() else (base / p)
+            if not cand.exists():
+                overlap = "unknown"
+                break
+    return {"files": found, "overlap_risk": overlap}
+
+
+def can_parallelize(tasks: list[dict]) -> dict:
+    """Decide whether tasks can run in parallel based on file overlap (§11)."""
+    file_to_tasks: dict[str, list[int]] = {}
+    task_files: list[list[str]] = []
+    for idx, t in enumerate(tasks):
+        text = t.get("task_text") or t.get("task") or ""
+        ws = t.get("workspace") or ""
+        info = scan_task_dependencies(text, ws)
+        files = info.get("files", [])
+        existing: list[str] = []
+        base = Path(ws) if ws else Path.cwd()
+        for f in files:
+            cand = Path(f) if Path(f).is_absolute() else (base / f)
+            if cand.is_file():
+                existing.append(f)
+        # Overlap must consider ALL referenced files (even not-yet-existing):
+        # a task that says "edit auth.py" intends to touch auth.py whether or
+        # not it exists on disk yet. Use the referenced set for collision
+        # detection; keep existing-file info for the report.
+        referenced = [f for f in files]
+        task_files.append(existing)
+        for f in referenced:
+            file_to_tasks.setdefault(f, []).append(idx)
+
+    shared: list[str] = [f for f, idxs in file_to_tasks.items() if len(idxs) > 1]
+    if shared:
+        return {
+            "parallel": False,
+            "reason": f"shared files: {sorted(shared)}",
+            "groups": [[t.get('task_text') or t.get('task') or '' for t in tasks]],
+        }
+    groups: list[list[str]] = []
+    for t in tasks:
+        groups.append([t.get("task_text") or t.get("task") or ""])
+    if not shared and tasks:
+        return {"parallel": True, "groups": groups, "reason": "no shared files"}
+    return {"parallel": True, "groups": groups, "reason": "no shared files"}
+
+
+def run_workers_plan_command(args) -> int:
+    """``hermes workers plan <task1> <task2> ...`` — parallelism decision (§11)."""
+    tasks_raw: list[str] = list(getattr(args, "tasks", None) or getattr(args, "task", None) or [])
+    if isinstance(tasks_raw, str):
+        tasks_raw = [tasks_raw]
+    workspace = getattr(args, "workspace", None) or ""
+    tasks: list[dict] = [{"task_text": t, "workspace": workspace} for t in tasks_raw if str(t).strip()]
+    if not tasks:
+        print("error: at least one task is required", file=sys.stderr)
+        return 1
+    as_json = bool(getattr(args, "json", False))
+    result = can_parallelize(tasks)
+    if as_json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"parallel: {result['parallel']}")
+        print(f"reason: {result['reason']}")
+        print(f"groups: {result['groups']}")
+    return 0
 
 
 def next_best_worker(
@@ -1284,6 +1548,8 @@ def run_workers_cli_command(args) -> int:
     switch_on_failure = bool(getattr(args, "switch_on_failure", False))
     wait = bool(getattr(args, "wait", False))
     context = getattr(args, "context", None) or ""
+    risk_aware = bool(getattr(args, "risk_aware", False))
+    allow_human = bool(getattr(args, "allow_human", False))
     constraints = {}
     model = getattr(args, "model", None) or ""
     provider = getattr(args, "provider", None) or ""
@@ -1293,6 +1559,16 @@ def run_workers_cli_command(args) -> int:
         constraints["provider"] = provider
 
     custom_workers = set(workers._read_custom_workers(hermes_home))
+
+    if risk_aware and not explicit:
+        classification = classify_task(task)
+        if classification.get("lane") == "human" and not allow_human:
+            print(
+                "error: task classified as 'human' lane — requires --allow-human to run",
+                file=sys.stderr,
+            )
+            print(f"classification: {classification}", file=sys.stderr)
+            return 1
 
     if explicit:
         worker_type = explicit
@@ -1312,10 +1588,13 @@ def run_workers_cli_command(args) -> int:
     else:
         evidence, evidence_path = _load_routing_evidence(hermes_home)
         try:
-            worker_type = route_task(task, capabilities_required, evidence, hermes_home)
+            worker_type = route_task(task, capabilities_required, evidence, hermes_home, risk_aware=risk_aware)
         except WorkerBackendError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
+        if risk_aware:
+            classification = classify_task(task)
+            print(f"[risk-aware] lane={classification['lane']} risk={classification['risk']} confidence={classification['confidence']} reasons={classification['reasons']}")
         ranked = rank_workers(task, capabilities_required, hermes_home)
         if evidence:
             print(
@@ -1640,13 +1919,21 @@ def run_workers_route_command(args) -> int:
     hermes_home = get_hermes_home()
     capabilities_required = list(getattr(args, "capabilities", None) or [])
     as_json = bool(getattr(args, "json", False))
+    risk_aware = bool(getattr(args, "risk_aware", False))
 
     evidence, store_path = _load_routing_evidence(hermes_home)
     try:
-        chosen = route_task(task, capabilities_required, evidence, hermes_home)
+        chosen = route_task(task, capabilities_required, evidence, hermes_home, risk_aware=risk_aware)
     except WorkerBackendError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    classification = classify_task(task) if risk_aware else None
+    if classification:
+        extra = f"lane={classification['lane']} risk={classification['risk']} confidence={classification['confidence']} reasons={classification['reasons']}"
+        if as_json:
+            pass
+        else:
+            print(f"[risk-aware] {extra}")
 
     scored = score_workers(task, capabilities_required, evidence, hermes_home)
     evidence_used = _has_evidence(scored)
@@ -1681,6 +1968,8 @@ def run_workers_route_command(args) -> int:
             for entry in display
         ],
     }
+    if classification:
+        payload["classification"] = classification
 
     if as_json:
         print(json.dumps(payload, indent=2, default=str))
