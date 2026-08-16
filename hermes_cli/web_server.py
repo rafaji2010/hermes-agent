@@ -275,6 +275,13 @@ async def _lifespan(app: "FastAPI"):
     # sweeping stale sessions on schedule, independent of list requests.
     auto_archive_task = asyncio.create_task(_auto_archive_ticker_loop())
 
+    # Ensure the dashboard Artifacts directory exists before the server
+    # accepts requests — the API and artifact generators both write here.
+    try:
+        _artifacts_dir()
+    except HTTPException:
+        pass
+
     try:
         yield
     finally:
@@ -436,11 +443,17 @@ def _has_valid_session_token(request: Request) -> bool:
 # Routes that may also authenticate via a ``?token=`` query param, for download
 # links opened by the OS shell or a new browser tab where the session header
 # can't be set. Kept narrow — same query-token tradeoff as the /api/pty WS.
-_QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download"})
+# ``/api/artifacts/`` is a prefix entry: artifact files are rendered inline in
+# sandboxed iframes and ``<img>`` tags, which are plain navigations that cannot
+# carry the session header (the SPA appends ``?token=`` to the URL instead).
+_QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({
+    "/api/files/download",
+    "/api/artifacts/",
+})
 
 
 def _has_valid_query_token(request: Request, path: str) -> bool:
-    if path not in _QUERY_TOKEN_API_PATHS:
+    if not any(path == allowed or path.startswith(allowed) for allowed in _QUERY_TOKEN_API_PATHS):
         return False
     token = request.query_params.get("token", "")
     return bool(token) and hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode())
@@ -2380,6 +2393,126 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
     # keep both off the event loop (asyncio.to_thread copies the contextvar
     # context, so the profile override stays scoped to the worker thread).
     return await asyncio.to_thread(_run)
+
+
+# ---------------------------------------------------------------------------
+# Artifacts — generated infographics / diagrams (HTML + PNG) surfaced in the
+# dashboard's Artifacts tab. Files live under ``<HERMES_HOME>/artifacts/``;
+# future generators publish new ones via :func:`register_artifact`. The
+# listing is auth-gated like every other ``/api/*`` route; the file-serve
+# route additionally accepts a ``?token=`` query param (see
+# ``_QUERY_TOKEN_API_PATHS``) so sandboxed iframes and ``<img>`` tags — plain
+# navigations that can't set the session header — can render inline.
+# ---------------------------------------------------------------------------
+
+
+def _artifacts_dir() -> Path:
+    """Return (creating on first use) the profile-scoped artifacts directory."""
+    artifacts_dir = get_hermes_home() / "artifacts"
+    try:
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not create artifacts directory: {exc}")
+    return artifacts_dir
+
+
+_ARTIFACT_KIND_BY_SUFFIX: Dict[str, str] = {
+    ".png": "image",
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".webp": "image",
+    ".gif": "image",
+    ".html": "html",
+    ".htm": "html",
+    ".svg": "svg",
+}
+
+
+def _artifact_kind(path: Path) -> str:
+    return _ARTIFACT_KIND_BY_SUFFIX.get(path.suffix.lower(), "file")
+
+
+def _artifact_entry(target: Path) -> Dict[str, Any]:
+    st = target.stat()
+    return {
+        "name": target.name,
+        "path": target.name,
+        "kind": _artifact_kind(target),
+        "size": st.st_size,
+        "mtime": st.st_mtime,
+    }
+
+
+def _resolve_artifact(name: str) -> Path:
+    """Resolve an artifact file inside the artifacts dir, 404ing otherwise.
+
+    Path-traversal safe: the candidate is resolved (following symlinks) and
+    must still be inside the artifacts directory.
+    """
+    raw = urllib.parse.unquote(str(name or ""))
+    if not raw or "\0" in raw:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    artifacts_dir = _artifacts_dir()
+    target = (artifacts_dir / raw).resolve()
+    if not target.is_relative_to(artifacts_dir.resolve()):
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return target
+
+
+@app.get("/api/artifacts")
+async def list_artifacts(request: Request):
+    """List the files in the dashboard's artifacts directory."""
+    artifacts_dir = _artifacts_dir()
+    try:
+        with os.scandir(artifacts_dir) as scan:
+            artifacts = [
+                _artifact_entry(Path(entry.path))
+                for entry in scan
+                if entry.is_file()
+            ]
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Artifacts directory is not readable")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read artifacts directory: {exc}")
+    artifacts.sort(key=lambda item: item["name"].lower())
+    return {"artifacts": artifacts}
+
+
+@app.get("/api/artifacts/{name:path}")
+async def get_artifact(name: str, request: Request):
+    """Serve an artifact's bytes for inline rendering (img / sandboxed iframe)."""
+    target = _resolve_artifact(name)
+    kind = _artifact_kind(target)
+    media_type = _fs_mime_type(target)
+    if kind == "html":
+        media_type = "text/html"
+    elif kind == "svg":
+        media_type = "image/svg+xml"
+    return FileResponse(
+        path=str(target),
+        media_type=media_type,
+        filename=target.name,
+        content_disposition_type="inline",
+    )
+
+
+def register_artifact(name: str, source_path) -> Path:
+    """Copy a generated artifact into the artifacts dir (not an API route).
+
+    Future artifact generators (infographic exporters, Excalidraw diagrams)
+    call this to publish a file into the dashboard-visible artifacts directory.
+    ``name`` is the destination filename, ``source_path`` any readable path.
+    Returns the destination :class:`pathlib.Path`.
+    """
+    raw = str(name or "").strip()
+    if not raw or raw in {".", ".."} or "/" in raw or "\\" in raw:
+        raise ValueError("artifact name must be a plain filename")
+    dest = (_artifacts_dir() / raw).resolve()
+    source = Path(source_path)
+    shutil.copyfile(source, dest)
+    return dest
 
 
 @app.get("/api/files")

@@ -461,6 +461,7 @@ export const api = {
     const query = path ? `?path=${encodeURIComponent(path)}` : "";
     return fetchJSON<ManagedFilesResponse>(`/api/files${query}`);
   },
+  listArtifacts: () => fetchJSON<ArtifactsResponse>("/api/artifacts"),
   readFile: (path: string) =>
     fetchJSON<ManagedFileReadResponse>(
       `/api/files/read?path=${encodeURIComponent(path)}`,
@@ -2038,6 +2039,22 @@ export interface ManagedFilesResponse {
   locked_root: string | null;
   can_change_path: boolean;
   entries: ManagedFileEntry[];
+}
+
+/** An artifact (generated infographic / diagram) in the dashboard's
+ * artifacts directory. ``kind`` drives how the Artifacts tab renders it:
+ * ``image``/``svg`` inline, ``html`` in a sandboxed iframe, ``file`` as a
+ * plain download entry. */
+export interface ArtifactEntry {
+  name: string;
+  path: string;
+  kind: "image" | "html" | "svg" | "file";
+  size: number;
+  mtime: number;
+}
+
+export interface ArtifactsResponse {
+  artifacts: ArtifactEntry[];
 }
 
 export interface ManagedFileReadResponse {

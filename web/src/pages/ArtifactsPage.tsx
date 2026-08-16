@@ -1,16 +1,142 @@
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
+import { useCallback, useEffect, useState } from "react";
+import { FileText, RefreshCw } from "lucide-react";
+import { Badge } from "@nous-research/ui/ui/components/badge";
+import { Button } from "@nous-research/ui/ui/components/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@nous-research/ui/ui/components/card";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { useI18n } from "@/i18n";
+import { usePageHeader } from "@/contexts/usePageHeader";
+import { api, HERMES_BASE_PATH, type ArtifactEntry } from "@/lib/api";
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Auth'd URL for inline artifact rendering. Iframes and ``<img>`` tags are
+ * plain navigations that can't carry the session header, so append the
+ * loopback session token as a query param (the server whitelists
+ * ``/api/artifacts/`` for query-token auth); gated mode rides on the session
+ * cookie instead. */
+function artifactFileUrl(name: string): string {
+  const token = window.__HERMES_SESSION_TOKEN__;
+  const url = `${HERMES_BASE_PATH}/api/artifacts/${encodeURIComponent(name)}`;
+  return token ? `${url}?token=${encodeURIComponent(token)}` : url;
+}
+
+function kindLabel(kind: ArtifactEntry["kind"]): string {
+  switch (kind) {
+    case "image":
+      return "Image";
+    case "svg":
+      return "SVG";
+    case "html":
+      return "HTML";
+    default:
+      return "File";
+  }
+}
+
+function ArtifactCard({ artifact }: { artifact: ArtifactEntry }) {
+  const isRenderable = artifact.kind === "image" || artifact.kind === "svg";
+  const isHtml = artifact.kind === "html";
+  const src = artifactFileUrl(artifact.path);
+
+  return (
+    <Card className="overflow-hidden">
+      <div className="flex h-56 items-center justify-center overflow-hidden border-b bg-muted/40">
+        {isHtml ? (
+          <iframe
+            src={src}
+            title={artifact.name}
+            sandbox="allow-scripts"
+            className="h-56 w-full"
+          />
+        ) : isRenderable ? (
+          <img
+            src={src}
+            alt={artifact.name}
+            className="max-h-full max-w-full object-contain"
+            loading="lazy"
+          />
+        ) : (
+          <div className="flex flex-col items-center gap-2 text-muted-foreground">
+            <FileText className="h-8 w-8" />
+            <span className="text-xs">{formatBytes(artifact.size)}</span>
+          </div>
+        )}
+      </div>
+      <CardContent className="space-y-2 p-4">
+        <div className="flex items-center justify-between gap-2">
+          <p className="truncate text-sm font-medium" title={artifact.name}>
+            {artifact.name}
+          </p>
+          <Badge tone="outline" className="shrink-0 text-xs capitalize">
+            {kindLabel(artifact.kind)}
+          </Badge>
+        </div>
+        <p className="text-xs text-muted-foreground">{formatBytes(artifact.size)}</p>
+      </CardContent>
+    </Card>
+  );
+}
 
 /**
  * Artifacts — interactive HTML dashboards, Excalidraw diagrams, and other
- * generated artifacts will appear here (M12/M13 roadmap).
+ * generated infographics surface here (see ``/api/artifacts`` backend).
  */
 export default function ArtifactsPage() {
   const { t } = useI18n();
   const a = t.artifacts;
+  const { setEnd } = usePageHeader();
+  const [artifacts, setArtifacts] = useState<ArtifactEntry[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      const result = await api.listArtifacts();
+      setArtifacts(result.artifacts);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    // Existing dashboard data pages fetch from effects; keep this local and
+    // explicit until the shared lint profile is updated for async loaders.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    setEnd(
+      <div className="flex items-center gap-2">
+        <Button
+          ghost
+          size="icon"
+          type="button"
+          onClick={() => void load()}
+          aria-label="Refresh artifacts"
+        >
+          <RefreshCw />
+        </Button>
+      </div>,
+    );
+    return () => setEnd(null);
+  }, [load, setEnd]);
+
+  const hasArtifacts = artifacts !== null && artifacts.length > 0;
 
   return (
-    <div className="container mx-auto max-w-4xl space-y-6 py-8">
+    <div className="container mx-auto max-w-6xl space-y-6 py-8">
       <div>
         <h1 className="text-2xl font-semibold">{a?.title ?? "Artifacts"}</h1>
         <p className="mt-1 text-sm text-muted-foreground">
@@ -18,22 +144,38 @@ export default function ArtifactsPage() {
         </p>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{a?.emptyTitle ?? "No artifacts yet"}</CardTitle>
-          <CardDescription>
-            {a?.emptyDescription ?? "Artifacts will appear here as they are generated."}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex min-h-[240px] items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground">
-          <div className="flex flex-col items-center gap-2">
-            <span className="text-3xl">📊</span>
-            <span>
-              {a?.emptyHint ?? "Interactive HTML dashboards and Excalidraw diagrams will appear here."}
-            </span>
-          </div>
-        </CardContent>
-      </Card>
+      {error ? (
+        <Card>
+          <CardContent className="text-sm text-muted-foreground">{error}</CardContent>
+        </Card>
+      ) : artifacts === null ? (
+        <div className="flex min-h-[240px] items-center justify-center">
+          <Spinner />
+        </div>
+      ) : hasArtifacts ? (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {artifacts.map((artifact) => (
+            <ArtifactCard key={artifact.path} artifact={artifact} />
+          ))}
+        </div>
+      ) : (
+        <Card>
+          <CardHeader>
+            <CardTitle>{a?.emptyTitle ?? "No artifacts yet"}</CardTitle>
+            <CardDescription>
+              {a?.emptyDescription ?? "Artifacts will appear here as they are generated."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex min-h-[240px] items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground">
+            <div className="flex flex-col items-center gap-2">
+              <span className="text-3xl">📊</span>
+              <span>
+                {a?.emptyHint ?? "Interactive HTML dashboards and Excalidraw diagrams will appear here."}
+              </span>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
