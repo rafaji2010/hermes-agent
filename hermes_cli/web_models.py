@@ -730,6 +730,11 @@ class _PluginProvidersPutBody(BaseModel):
     context_engine: Optional[str] = None
 
 
+class FleetRunRequest(BaseModel):
+    task: str
+    worker: Optional[str] = None
+
+
 # --- from web_server.py (originally lines 19919-19920) ---
 
 class _PluginVisibilityBody(BaseModel):

@@ -89,6 +89,7 @@ const CronPage = lazy(() => import("@/pages/CronPage"));
 const ProfilesPage = lazy(() => import("@/pages/ProfilesPage"));
 const ProfileBuilderPage = lazy(() => import("@/pages/ProfileBuilderPage"));
 const ArtifactsPage = lazy(() => import("@/pages/ArtifactsPage"));
+const FleetPage = lazy(() => import("@/pages/FleetPage"));
 const SkillsPage = lazy(() => import("@/pages/SkillsPage"));
 const PluginsPage = lazy(() => import("@/pages/PluginsPage"));
 const McpPage = lazy(() => import("@/pages/McpPage"));
@@ -173,6 +174,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/profiles": ProfilesPage,
   "/profiles/new": ProfileBuilderPage,
   "/artifacts": ArtifactsPage,
+  "/fleet": FleetPage,
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
@@ -217,6 +219,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
   { path: "/artifacts", label: "Artifacts", icon: Star },
+  { path: "/fleet", label: "Fleet", icon: Zap },
   { path: "/mcp", label: "MCP", icon: Plug },
   { path: "/channels", label: "Channels", icon: Radio },
   { path: "/webhooks", label: "Webhooks", icon: Webhook },

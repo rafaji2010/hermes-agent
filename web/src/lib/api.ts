@@ -1325,6 +1325,16 @@ export const api = {
     fetchJSON<SkillHubScan>(
       `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
     ),
+
+  getFleetStatus: () => fetchJSON<FleetStatusResponse>("/api/fleet/status"),
+  getFleetEvents: (cursor = 0) =>
+    fetchJSON<FleetEventsResponse>(`/api/fleet/events?cursor=${cursor}`),
+  runFleetTask: (task: string, worker?: string) =>
+    fetchJSON<{ execution_id: string; worker_type: string }>("/api/fleet/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task, worker: worker || undefined }),
+    }),
 };
 
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).
@@ -2680,4 +2690,52 @@ export interface AgentPluginUpdateResponse {
 export interface PluginProvidersPutRequest {
   memory_provider?: string;
   context_engine?: string;
+}
+
+export interface FleetLiveExecution {
+  execution_id: string;
+  worker_type: string;
+  task: string;
+  status: string;
+  started_at: number;
+  updated_at: number;
+}
+
+export interface FleetHistoryEntry {
+  execution_id: string;
+  worker_type: string;
+  task: string;
+  status: string;
+  started_at: number;
+  ended_at: number;
+  result_tail: string;
+  error: string;
+}
+
+export interface FleetWorker {
+  name: string;
+  version: string | null;
+  capabilities: string[];
+}
+
+export interface FleetStatusResponse {
+  live: FleetLiveExecution[];
+  history: FleetHistoryEntry[];
+  workers: FleetWorker[];
+  timestamp: number;
+}
+
+export interface FleetEvent {
+  seq: number;
+  type: string;
+  execution_id: string;
+  worker_type: string;
+  task: string;
+  status: string;
+  ts: number;
+}
+
+export interface FleetEventsResponse {
+  events: FleetEvent[];
+  next_cursor: number;
 }

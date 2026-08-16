@@ -1436,6 +1436,7 @@ from hermes_cli.web_models import (  # noqa: F401
     _AgentPluginInstallBody,
     _PluginProvidersPutBody,
     _PluginVisibilityBody,
+    FleetRunRequest,
 )
 
 
@@ -2513,6 +2514,169 @@ def register_artifact(name: str, source_path) -> Path:
     source = Path(source_path)
     shutil.copyfile(source, dest)
     return dest
+
+
+# ---------------------------------------------------------------------------
+# Fleet — realtime worker fleet dashboard (§28/§30)
+# ---------------------------------------------------------------------------
+
+_fleet_events: list[dict] = []
+_fleet_next_seq: int = 1
+_fleet_seen: dict[str, str] = {}
+
+
+def _fleet_collect_events() -> None:
+    global _fleet_next_seq
+    try:
+        from hermes_cli import worker_backend
+    except Exception:
+        return
+    try:
+        live = worker_backend.load_live_executions()
+    except Exception:
+        live = []
+    try:
+        history = worker_backend.load_execution_history(50)
+    except Exception:
+        history = []
+    combined: dict[str, dict] = {}
+    for rec in live:
+        eid = rec.get("execution_id")
+        if eid:
+            combined[str(eid)] = rec
+    for rec in history:
+        eid = rec.get("execution_id")
+        if eid and str(eid) not in combined:
+            combined[str(eid)] = rec
+    for eid, rec in combined.items():
+        status = str(rec.get("status") or "")
+        prev = _fleet_seen.get(eid)
+        if prev is None:
+            ts = rec.get("started_at") or rec.get("updated_at") or rec.get("ended_at") or time.time()
+            _fleet_events.append({
+                "seq": _fleet_next_seq,
+                "type": "execution_created",
+                "execution_id": eid,
+                "worker_type": str(rec.get("worker_type") or ""),
+                "task": str(rec.get("task") or ""),
+                "status": status,
+                "ts": float(ts) if isinstance(ts, (int, float)) else time.time(),
+            })
+            _fleet_next_seq += 1
+            _fleet_seen[eid] = status
+        elif prev != status:
+            ts = rec.get("updated_at") or rec.get("ended_at") or time.time()
+            _fleet_events.append({
+                "seq": _fleet_next_seq,
+                "type": "status_changed",
+                "execution_id": eid,
+                "worker_type": str(rec.get("worker_type") or ""),
+                "task": str(rec.get("task") or ""),
+                "status": status,
+                "ts": float(ts) if isinstance(ts, (int, float)) else time.time(),
+            })
+            _fleet_next_seq += 1
+            _fleet_seen[eid] = status
+    if len(_fleet_events) > 500:
+        del _fleet_events[: len(_fleet_events) - 500]
+
+
+@app.get("/api/fleet/status")
+async def fleet_status(request: Request):
+    _require_token(request)
+    try:
+        from hermes_cli import worker_backend
+        from hermes_cli import workers as _workers
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    try:
+        live = worker_backend.load_live_executions()
+    except Exception:
+        live = []
+    try:
+        history = worker_backend.load_execution_history(20)
+    except Exception:
+        history = []
+    try:
+        workers_list = _workers.load_all_workers()
+        workers_out = [
+            {"name": w.get("name"), "version": w.get("version"), "capabilities": list(w.get("capabilities") or [])}
+            for w in workers_list
+        ]
+    except Exception:
+        workers_out = []
+    return {"live": live, "history": history, "workers": workers_out, "timestamp": time.time()}
+
+
+@app.get("/api/fleet/events")
+async def fleet_events(request: Request, cursor: int = Query(0, ge=0)):
+    _require_token(request)
+    _fleet_collect_events()
+    try:
+        c = int(cursor)
+    except Exception:
+        c = 0
+    events = [e for e in _fleet_events if int(e.get("seq", 0)) > c]
+    next_cursor = _fleet_events[-1]["seq"] if _fleet_events else c
+    # If cursor beyond end, next_cursor stays at latest
+    if c >= next_cursor and _fleet_events:
+        next_cursor = _fleet_events[-1]["seq"]
+    elif not _fleet_events:
+        next_cursor = c
+    return {"events": events, "next_cursor": next_cursor}
+
+
+@app.post("/api/fleet/run")
+async def fleet_run(request: Request, body: FleetRunRequest):
+    _require_token(request)
+    task = (body.task or "").strip()
+    if not task:
+        raise HTTPException(status_code=400, detail="task must not be empty")
+    from hermes_cli.config import get_hermes_home as _get_home
+    from hermes_cli import worker_backend as _wb
+    hermes_home = _get_home()
+    worker_type = (body.worker or "").strip()
+    if worker_type:
+        # Validate known worker name
+        custom = {}
+        try:
+            from hermes_cli import workers as _workers
+            custom = _workers._read_custom_workers(hermes_home)
+        except Exception:
+            custom = {}
+        if worker_type not in _wb.BACKENDS and worker_type not in custom:
+            # Allow any known builtin name even if not installed; reject truly unknown
+            from hermes_cli.workers import BUILTIN_WORKERS
+            if worker_type not in BUILTIN_WORKERS and worker_type not in custom:
+                raise HTTPException(status_code=400, detail=f"unknown worker '{worker_type}'")
+    else:
+        try:
+            evidence, _ = _wb._load_routing_evidence(hermes_home)
+            worker_type = _wb.route_task(task, None, evidence, hermes_home)
+        except Exception:
+            try:
+                from hermes_cli import workers as _workers
+                avail = _workers.load_all_workers(hermes_home)
+                if avail:
+                    worker_type = str(avail[0].get("name") or "codex")
+                else:
+                    worker_type = "codex"
+            except Exception:
+                worker_type = "codex"
+    # Temp workspace for isolated execution
+    workspace = tempfile.mkdtemp(prefix="hermes-fleet-")
+    try:
+        spec = _wb.WorkerSpec(worker_type=worker_type, task=task, workspace=workspace, timeout=600)
+        backend = _wb.get_backend(worker_type)
+        execution_id = backend.start(spec)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    # Prime the event feed so the new execution appears on next poll
+    try:
+        _fleet_collect_events()
+    except Exception:
+        pass
+    return {"execution_id": execution_id, "worker_type": worker_type}
 
 
 @app.get("/api/files")
