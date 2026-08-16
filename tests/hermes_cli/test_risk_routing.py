@@ -102,3 +102,59 @@ def test_parallel_three_tasks_one_shared():
     ])
     assert res["parallel"] is False
     assert "auth.py" in res["reason"]
+
+
+def test_parallel_normalized_paths_equal():
+    """./auth.py and auth.py must collide (same resolved file)."""
+    res = can_parallelize([
+        {"task_text": "edit ./auth.py"},
+        {"task_text": "fix auth.py"},
+    ])
+    assert res["parallel"] is False
+
+
+def test_parallel_same_basename_different_workspace_no_collision():
+    """Same basename in different workspaces must NOT collide."""
+    res = can_parallelize([
+        {"task_text": "edit auth.py", "workspace": "/tmp/ws-a"},
+        {"task_text": "edit auth.py", "workspace": "/tmp/ws-b"},
+    ])
+    assert res["parallel"] is True
+
+
+# --- prod word-boundary (review fix) ---
+
+def test_prod_word_boundary():
+    """'productive' must not trigger high risk; 'prod' as a word must."""
+    c = classify_task("make the build more productive")
+    assert c["risk"] == "low"
+    c2 = classify_task("deploy the prod config")
+    assert c2["risk"] == "high"
+
+
+# --- human-lane refusal path (review must-fix) ---
+
+def test_classify_human_lane_refusal_requires_allow_human():
+    """A human-lane task must refuse to run unless --allow-human is set,
+    even when an explicit --worker is given (the safety bypass)."""
+    from hermes_cli import worker_backend as wb
+
+    class _Args:
+        task = "deploy to production"
+        worker = "opencode"  # explicit worker — must NOT bypass
+        risk_aware = True
+        allow_human = False
+        workspace = ""
+        timeout = 60
+        retry = 0
+        switch_on_failure = False
+        context = ""
+        model = ""
+        provider = ""
+        capabilities = None
+        json_out = False
+        wait = False
+        verbose = False
+
+    rc = wb.run_workers_cli_command(_Args())
+    assert rc == 1  # refused

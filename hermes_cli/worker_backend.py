@@ -1264,12 +1264,13 @@ def classify_task(task_text: str) -> dict:
 
     matched_risk: list[str] = []
     for sig in _RISK_SIGNALS:
+        if sig == "prod":
+            # Word-boundary: "prod" as a word (not "productive"); "production"
+            # is its own signal, so skip when only the substring matched.
+            if re.search(r"\bprod\b", lowered):
+                matched_risk.append(sig)
+            continue
         if sig in lowered:
-            if sig == "prod":
-                if not re.search(r"\bprod\b", lowered) and "production" not in lowered:
-                    continue
-                if "production" in lowered and sig == "prod":
-                    continue
             matched_risk.append(sig)
     if matched_risk:
         risk = "high"
@@ -1391,37 +1392,28 @@ def scan_task_dependencies(task_text: str, workspace: str = "") -> dict:
             if p not in seen:
                 seen.add(p)
                 found.append(p)
-    existing: list[str] = []
     base = Path(workspace) if workspace else Path.cwd()
+    existing: list[str] = []
+    missing: list[str] = []
     for p in found:
         cand = Path(p) if Path(p).is_absolute() else (base / p)
         if cand.is_file():
             existing.append(p)
-    if not found:
-        overlap: str = "unknown"
-    elif existing and len(existing) < len(found):
-        overlap = "unknown"
-    elif existing:
-        overlap = "none"
-    else:
-        overlap = "none" if found else "unknown"
+        elif not cand.exists():
+            missing.append(p)
+    # Effective overlap: default "none"; flip to "unknown" when any referenced
+    # path is missing (can't prove the file set — conservative).
+    overlap: str = "none"
     if not found:
         overlap = "unknown"
-    elif existing:
-        overlap = "none"
-    else:
-        overlap = "none"
-        for p in found:
-            cand = Path(p) if Path(p).is_absolute() else (base / p)
-            if not cand.exists():
-                overlap = "unknown"
-                break
-    return {"files": found, "overlap_risk": overlap}
+    elif missing:
+        overlap = "unknown"
+    return {"files": found, "existing": existing, "overlap_risk": overlap}
 
 
 def can_parallelize(tasks: list[dict]) -> dict:
     """Decide whether tasks can run in parallel based on file overlap (§11)."""
-    file_to_tasks: dict[str, list[int]] = {}
+    file_to_tasks: dict[tuple[str, str], list[int]] = {}
     task_files: list[list[str]] = []
     for idx, t in enumerate(tasks):
         text = t.get("task_text") or t.get("task") or ""
@@ -1434,20 +1426,30 @@ def can_parallelize(tasks: list[dict]) -> dict:
             cand = Path(f) if Path(f).is_absolute() else (base / f)
             if cand.is_file():
                 existing.append(f)
-        # Overlap must consider ALL referenced files (even not-yet-existing):
-        # a task that says "edit auth.py" intends to touch auth.py whether or
-        # not it exists on disk yet. Use the referenced set for collision
-        # detection; keep existing-file info for the report.
-        referenced = [f for f in files]
+        # Normalize paths for overlap: resolve relative to the task workspace
+        # and use (workspace, normalized) as the collision key so "./auth.py"
+        # == "auth.py" == "src/auth.py" (same resolved file), while the same
+        # basename in different workspaces does NOT collide.
+        normalized: list[str] = []
+        for f in files:
+            cand = Path(f) if Path(f).is_absolute() else (base / f)
+            try:
+                norm = cand.resolve().as_posix()
+            except OSError:
+                norm = (base / f).as_posix().lstrip("./")
+            normalized.append(norm)
         task_files.append(existing)
-        for f in referenced:
-            file_to_tasks.setdefault(f, []).append(idx)
+        for norm in normalized:
+            file_to_tasks.setdefault((ws, norm), []).append(idx)
 
-    shared: list[str] = [f for f, idxs in file_to_tasks.items() if len(idxs) > 1]
+    shared: list[tuple[str, str]] = [
+        f for f, idxs in file_to_tasks.items() if len(idxs) > 1
+    ]
     if shared:
+        shared_names = sorted({os.path.basename(f) for _, f in shared})
         return {
             "parallel": False,
-            "reason": f"shared files: {sorted(shared)}",
+            "reason": f"shared files: {shared_names}",
             "groups": [[t.get('task_text') or t.get('task') or '' for t in tasks]],
         }
     groups: list[list[str]] = []
@@ -1560,7 +1562,9 @@ def run_workers_cli_command(args) -> int:
 
     custom_workers = set(workers._read_custom_workers(hermes_home))
 
-    if risk_aware and not explicit:
+    # Safety gate FIRST: human-lane classification must refuse BEFORE any
+    # explicit worker dispatch, or `--worker X` would bypass the human lane.
+    if risk_aware:
         classification = classify_task(task)
         if classification.get("lane") == "human" and not allow_human:
             print(
@@ -1569,6 +1573,8 @@ def run_workers_cli_command(args) -> int:
             )
             print(f"classification: {classification}", file=sys.stderr)
             return 1
+    else:
+        classification = None
 
     if explicit:
         worker_type = explicit
