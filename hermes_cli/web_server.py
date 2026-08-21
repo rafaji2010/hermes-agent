@@ -2675,6 +2675,7 @@ _FLEET_MODELS_CACHE: dict = {}
 _FLEET_MODELS_AT: float | None = None
 _FLEET_MODELS_FETCH_LOCK: object | None = None
 _FLEET_MODELS_FETCH_TASK: object | None = None
+_FLEET_MODELS_TASK: object | None = None
 
 
 def _fleet_models_redact(msg: str) -> str:
