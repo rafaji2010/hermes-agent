@@ -9517,6 +9517,12 @@ async function spawnPoolBackend(profile, entry) {
   const parentStartMarker = await desktopParentStartMarker()
   const backendNonce = crypto.randomBytes(16).toString('hex')
 
+  // Fork fix (dd7b76c6e, re-applied after merge cbb2df504d dropped it):
+  // HERMES_WEB_DIST must NOT reach the backend env. Upstream passes the
+  // desktop bundle path here, but every shell the backend spawns inherits
+  // it and then `hermes dashboard` serves the DESKTOP bundle in browsers
+  // ("Desktop IPC bridge is unavailable"). undefined omits the var from the
+  // child env; the app's own UI resolution (resolveWebDist) is untouched.
   const child = spawn(
     backend.command,
     backend.args,
@@ -9539,7 +9545,7 @@ async function spawnPoolBackend(profile, entry) {
         HERMES_PARENT_PID: String(process.pid),
         HERMES_PARENT_START_MARKER: parentStartMarker,
         HERMES_PARENT_NONCE: backendNonce,
-        HERMES_WEB_DIST: webDist,
+        HERMES_WEB_DIST: undefined,
         ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
       },
       shell: backend.shell,
@@ -9874,7 +9880,7 @@ async function startHermes() {
           HERMES_PARENT_PID: String(process.pid),
           HERMES_PARENT_START_MARKER: parentStartMarker,
           HERMES_PARENT_NONCE: backendNonce,
-          HERMES_WEB_DIST: webDist,
+          HERMES_WEB_DIST: undefined,
           ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
         },
         shell: backend.shell,
