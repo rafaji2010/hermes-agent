@@ -81,15 +81,19 @@ def data_training_warning(
     *,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,  # noqa: ARG001 — reserved for host-scoped rules
+    acknowledged: bool = False,
 ) -> Optional[DataTrainingWarning]:
     """Return a warning payload when *model_name* selects a data-training tier.
 
-    Returns ``None`` when no rule matches (the common case). Callers should run
-    this after model resolution so aliases / provider-specific ids have settled,
-    and surface ``.message`` as a confirm prompt.
+    Returns ``None`` when no rule matches (the common case) OR when the user
+    has already acknowledged this model's data-training tier (``acknowledged``).
+    Callers should run this after model resolution so aliases / provider-specific
+    ids have settled, and surface ``.message`` as a confirm prompt.
     """
     model = (model_name or "").strip()
     if not model:
+        return None
+    if acknowledged:
         return None
     model_lower = model.lower()
     provider_lower = (provider or "").strip().lower()

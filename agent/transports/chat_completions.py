@@ -87,10 +87,11 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
     """Return the model's wire-compatible reasoning config."""
     if not isinstance(reasoning_config, dict):
         return reasoning_config
-    if (
-        "gpt-5.6" in (model or "").lower()
-        and str(reasoning_config.get("effort") or "").strip().lower() == "ultra"
-    ):
+    # `ultra` is a Hermes/OpenRouter-side effort label, but most OpenAI-
+    # compatible gateways (commandcode, OpenRouter's strict providers) reject
+    # it with HTTP 400 (expected: low|medium|high|xhigh|max). Clamp it to
+    # `max` for every model — the wire-standard maximum.
+    if str(reasoning_config.get("effort") or "").strip().lower() == "ultra":
         normalized = dict(reasoning_config)
         normalized["effort"] = "max"
         return normalized

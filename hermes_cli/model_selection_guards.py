@@ -75,10 +75,25 @@ def _data_policy_guard(
 ) -> Optional[SelectionWarning]:
     from hermes_cli.model_data_policy_guard import data_training_warning
 
+    # One-time consent: if the user has acknowledged data-training tiers in
+    # config (model.acknowledge_data_training: true), don't re-warn on every
+    # selection of a -contributor model.
+    acknowledged = False
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        acknowledged = bool(
+            (cfg.get("model") or {}).get("acknowledge_data_training")
+        )
+    except Exception:
+        acknowledged = False
+
     warning = data_training_warning(
         model_name,
         provider=provider,
         base_url=base_url,
+        acknowledged=acknowledged,
     )
     if warning is None:
         return None
