@@ -2669,6 +2669,205 @@ _fleet_events: list[dict] = []
 _fleet_next_seq: int = 1
 _fleet_seen: dict[str, str] = {}
 
+# Fleet model catalog cache (per-provider isolation, TTL 1h, stale-serve, single-flight)
+_FLEET_MODELS_TTL = 3600
+_FLEET_MODELS_CACHE: dict = {}
+_FLEET_MODELS_AT: float | None = None
+_FLEET_MODELS_FETCH_LOCK: object | None = None
+_FLEET_MODELS_FETCH_TASK: object | None = None
+
+
+def _fleet_models_redact(msg: str) -> str:
+    try:
+        msg = re.sub(r"Bearer\s+[A-Za-z0-9\-\._~\+\/]+=*", "Bearer [REDACTED]", msg, flags=re.IGNORECASE)
+        msg = re.sub(r"Authorization[^\n]*", "Authorization: [REDACTED]", msg, flags=re.IGNORECASE)
+        msg = re.sub(r"(apiKey|api_key|COMMAND_CODE_API_KEY|OPENCODE_GO_API_KEY)\s*[:=]\s*[^\s,\}]+", r"\1=[REDACTED]", msg, flags=re.IGNORECASE)
+        return msg
+    except Exception:
+        return "fetch failed"
+
+
+def _fleet_models_load_opencode_key() -> str:
+    try:
+        env = load_env()
+        for k in ("OPENCODE_GO_API_KEY", "OPENC_GO_API_KEY"):
+            v = (env.get(k) or "").strip()
+            if v:
+                return v
+        return ""
+    except Exception:
+        return ""
+
+
+def _fleet_models_load_commandcode_key() -> str:
+    try:
+        p = Path.home() / ".config" / "commandcode" / "env"
+        if p.is_file():
+            try:
+                txt = p.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                txt = ""
+            for raw_line in txt.splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[7:].strip()
+                m = re.search(r"COMMAND_CODE_API_KEY\s*=\s*[\"\']?([^\"\'\s]+)[\"\']?", line)
+                if m:
+                    v = m.group(1).strip()
+                    if v:
+                        return v
+                m2 = re.search(r"COMMANDCODE_API_KEY\s*=\s*[\"\']?([^\"\'\s]+)[\"\']?", line)
+                if m2:
+                    v = m2.group(1).strip()
+                    if v:
+                        return v
+    except Exception:
+        pass
+    try:
+        p2 = Path.home() / ".commandcode" / "auth.json"
+        if p2.is_file():
+            raw = json.loads(p2.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                v = str(raw.get("apiKey") or raw.get("api_key") or "").strip()
+                if v:
+                    return v
+    except Exception:
+        pass
+    return ""
+
+
+def _fleet_models_parse_ids(payload) -> list[str]:
+    try:
+        if not isinstance(payload, dict):
+            return []
+        data = payload.get("data")
+        if not isinstance(data, list):
+            return []
+        out: list[str] = []
+        for entry in data:
+            if isinstance(entry, dict):
+                mid = entry.get("id")
+                if isinstance(mid, str) and mid.strip():
+                    out.append(mid.strip())
+            elif isinstance(entry, str) and entry.strip():
+                out.append(entry.strip())
+        return out
+    except Exception:
+        return []
+
+
+def _fleet_fetch_opencode_sync() -> list[str]:
+    url = "https://opencode.ai/zen/go/v1/models"
+    key = _fleet_models_load_opencode_key()
+    headers: dict[str, str] = {}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        raw = resp.read()
+        text = raw.decode("utf-8", errors="replace")
+        payload = json.loads(text)
+        return _fleet_models_parse_ids(payload)
+
+
+def _fleet_fetch_commandcode_sync() -> list[str]:
+    url = "https://api.commandcode.ai/provider/v1/models"
+    key = _fleet_models_load_commandcode_key()
+    headers: dict[str, str] = {}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        raw = resp.read()
+        text = raw.decode("utf-8", errors="replace")
+        payload = json.loads(text)
+        return _fleet_models_parse_ids(payload)
+
+
+def _fleet_fetch_openrouter_sync() -> list[str]:
+    url = "https://openrouter.ai/api/v1/models"
+    req = urllib.request.Request(url, headers={}, method="GET")
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        raw = resp.read()
+        text = raw.decode("utf-8", errors="replace")
+        payload = json.loads(text)
+        return _fleet_models_parse_ids(payload)
+
+
+async def _fleet_fetch_all_providers() -> tuple[dict, dict]:
+    global _FLEET_MODELS_CACHE, _FLEET_MODELS_AT
+    existing = dict(_FLEET_MODELS_CACHE) if isinstance(_FLEET_MODELS_CACHE, dict) else {}
+    providers: dict = {}
+    errors: dict = {}
+    # opencode-go
+    try:
+        models = await run_in_threadpool(_fleet_fetch_opencode_sync)
+        if not isinstance(models, list):
+            models = []
+        providers["opencode-go"] = {"models": list(models)}
+        _FLEET_MODELS_CACHE["opencode-go"] = {"models": list(models)}
+    except Exception as exc:
+        msg = _fleet_models_redact(str(exc) or exc.__class__.__name__)
+        if "opencode-go" in existing:
+            providers["opencode-go"] = {"models": list(existing["opencode-go"].get("models", []))}
+        else:
+            providers["opencode-go"] = {"models": []}
+        errors["opencode-go"] = f"fetch failed: {msg[:300]}"
+        try:
+            _log.warning("fleet models fetch opencode-go failed: %s", _fleet_models_redact(str(exc)))
+        except Exception:
+            pass
+    # commandcode
+    try:
+        models = await run_in_threadpool(_fleet_fetch_commandcode_sync)
+        if not isinstance(models, list):
+            models = []
+        providers["commandcode"] = {"models": list(models)}
+        _FLEET_MODELS_CACHE["commandcode"] = {"models": list(models)}
+    except Exception as exc:
+        msg = _fleet_models_redact(str(exc) or exc.__class__.__name__)
+        if "commandcode" in existing:
+            providers["commandcode"] = {"models": list(existing["commandcode"].get("models", []))}
+        else:
+            providers["commandcode"] = {"models": []}
+        errors["commandcode"] = f"fetch failed: {msg[:300]}"
+        try:
+            _log.warning("fleet models fetch commandcode failed: %s", _fleet_models_redact(str(exc)))
+        except Exception:
+            pass
+    # openrouter
+    try:
+        models = await run_in_threadpool(_fleet_fetch_openrouter_sync)
+        if not isinstance(models, list):
+            models = []
+        providers["openrouter"] = {"models": list(models)}
+        _FLEET_MODELS_CACHE["openrouter"] = {"models": list(models)}
+    except Exception as exc:
+        msg = _fleet_models_redact(str(exc) or exc.__class__.__name__)
+        if "openrouter" in existing:
+            providers["openrouter"] = {"models": list(existing["openrouter"].get("models", []))}
+        else:
+            providers["openrouter"] = {"models": []}
+        errors["openrouter"] = f"fetch failed: {msg[:300]}"
+        try:
+            _log.warning("fleet models fetch openrouter failed: %s", _fleet_models_redact(str(exc)))
+        except Exception:
+            pass
+    for prov in ("opencode-go", "commandcode", "openrouter"):
+        if prov not in providers:
+            if prov in existing:
+                providers[prov] = {"models": list(existing[prov].get("models", []))}
+                errors[prov] = errors.get(prov, "fetch failed: unknown")
+            else:
+                providers[prov] = {"models": []}
+                errors[prov] = errors.get(prov, "fetch failed: unknown")
+    _FLEET_MODELS_AT = time.time()
+    return providers, errors
+
+
+
 
 def _fleet_collect_events() -> None:
     global _fleet_next_seq
@@ -2750,7 +2949,13 @@ async def fleet_status(request: Request):
         ]
     except Exception:
         workers_out = []
-    return {"live": live, "history": history, "workers": workers_out, "timestamp": time.time()}
+    # Include worker_models for picker highlight
+    try:
+        from hermes_cli import worker_backend as _wb2
+        worker_models = _wb2.load_worker_models()
+    except Exception:
+        worker_models = {}
+    return {"live": live, "history": history, "workers": workers_out, "timestamp": time.time(), "worker_models": worker_models}
 
 
 @app.get("/api/fleet/events")
@@ -2839,6 +3044,213 @@ async def fleet_run(request: Request, body: FleetRunRequest):
     except Exception:
         pass
     return {"execution_id": execution_id, "worker_type": worker_type}
+
+
+
+# ---------------------------------------------------------------------------
+# Fleet model picker (§ fleet model per-harness) — catalog + persistence
+# ---------------------------------------------------------------------------
+
+@app.get("/api/fleet/models")
+async def fleet_models(request: Request):
+    _require_token(request)
+    global _FLEET_MODELS_TASK, _FLEET_MODELS_CACHE, _FLEET_MODELS_AT
+    # TTL check: serve cached if within 1h
+    now = time.time()
+    if _FLEET_MODELS_AT is not None and _FLEET_MODELS_CACHE and (now - _FLEET_MODELS_AT) < _FLEET_MODELS_TTL:
+        # Remaining TTL for header
+        remaining = max(0, int(_FLEET_MODELS_TTL - (now - _FLEET_MODELS_AT)))
+        # Determine if cached had any prior error? We don't cache errors, so treat as success
+        # Re-compose providers shape from cache
+        providers = {k: {"models": list(v.get("models", []))} for k, v in _FLEET_MODELS_CACHE.items()}
+        # Ensure all providers present
+        for prov in ("opencode-go", "commandcode", "openrouter"):
+            if prov not in providers:
+                providers[prov] = {"models": []}
+        headers = {"Cache-Control": f"public, max-age={remaining}"}
+        return JSONResponse({"providers": providers}, headers=headers)
+    # Single-flight: if fetch in-flight, await it
+    if _FLEET_MODELS_TASK is not None:
+        try:
+            # It is an asyncio Task
+            import asyncio as _asyncio
+            if isinstance(_FLEET_MODELS_TASK, _asyncio.Task):
+                providers, errors = await _FLEET_MODELS_TASK
+                # Serve result of ongoing fetch
+                body: dict = {"providers": providers}
+                if errors:
+                    body["errors"] = errors
+                headers = {"Cache-Control": "public, max-age=3600" if not errors else "public, max-age=3600, must-revalidate"}
+                return JSONResponse(body, headers=headers)
+        except Exception:
+            pass
+        # Fall through to new fetch if awaiting failed
+
+    # Start new fetch
+    import asyncio as _asyncio
+    task = _asyncio.create_task(_fleet_fetch_all_providers())
+    _FLEET_MODELS_TASK = task
+    try:
+        providers, errors = await task
+    finally:
+        _FLEET_MODELS_TASK = None
+    body: dict = {"providers": providers}
+    if errors:
+        body["errors"] = errors
+        headers = {"Cache-Control": "public, max-age=3600, must-revalidate"}
+    else:
+        headers = {"Cache-Control": "public, max-age=3600"}
+    return JSONResponse(body, headers=headers)
+
+
+@app.get("/api/fleet/models/{worker}")
+async def fleet_models_get_worker(request: Request, worker: str):
+    _require_token(request)
+    w = (worker or "").strip()
+    if not w:
+        raise HTTPException(status_code=400, detail="worker must not be empty")
+    # Validate worker against builtins + custom
+    try:
+        from hermes_cli import worker_backend as _wb
+        from hermes_cli.workers import BUILTIN_WORKERS as _BUILTIN
+        from hermes_cli.workers import _read_custom_workers as _read_custom
+        from hermes_cli.config import get_hermes_home as _get_home
+        home = _get_home()
+        custom = {}
+        try:
+            custom = _read_custom(home)
+        except Exception:
+            custom = {}
+        if w not in _BUILTIN and w not in custom and w not in _wb.BACKENDS:
+            # allow any BUILTIN name even if not in BACKENDS? Already checked _BUILTIN, so this is truly unknown
+            raise HTTPException(status_code=404, detail=f"unknown worker '{w}'")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+    try:
+        from hermes_cli import worker_backend as _wb2
+        data = _wb2.load_worker_models()
+        entry = data.get(w)
+        if isinstance(entry, dict) and entry.get("provider") and entry.get("model"):
+            return {"worker": w, "provider": str(entry.get("provider")), "model": str(entry.get("model"))}
+        return {"worker": w, "provider": "", "model": ""}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/fleet/models/{worker}")
+async def fleet_models_set_worker(request: Request, worker: str):
+    _require_token(request)
+    w = (worker or "").strip()
+    if not w:
+        raise HTTPException(status_code=400, detail="worker must not be empty")
+    # Parse body
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    provider = str(body.get("provider") or "").strip()
+    model = str(body.get("model") or "").strip()
+    # Validate worker allowlist
+    try:
+        from hermes_cli import worker_backend as _wb
+        from hermes_cli.workers import BUILTIN_WORKERS as _BUILTIN
+        from hermes_cli.workers import _read_custom_workers as _read_custom
+        from hermes_cli.config import get_hermes_home as _get_home
+        home = _get_home()
+        custom = {}
+        try:
+            custom = _read_custom(home)
+        except Exception:
+            custom = {}
+        allowed_workers = set(_BUILTIN.keys()) | set(custom.keys()) | set(_wb.BACKENDS.keys())
+        # Also allow any BUILTIN even if not in BACKENDS
+        if w not in allowed_workers:
+            raise HTTPException(status_code=404, detail=f"unknown worker '{w}'")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    # Handle clear: if both empty, delete entry
+    if not provider and not model:
+        # Clear operation
+        try:
+            from hermes_cli import worker_backend as _wb
+            _wb.clear_worker_model(w)
+            return {"worker": w, "provider": "", "model": ""}
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+    # Validate provider
+    allowed_providers = {"opencode-go", "commandcode", "openrouter"}
+    if provider not in allowed_providers:
+        raise HTTPException(status_code=400, detail=f"invalid provider '{provider}'")
+    # Validate model regex
+    import re as _re
+    if not _re.match(r"^[A-Za-z0-9._/:-]{1,128}$", model):
+        raise HTTPException(status_code=400, detail="invalid model id")
+    # Model ID validation against catalog if populated for that provider
+    try:
+        # Look at cached catalog
+        cached = _FLEET_MODELS_CACHE.get(provider) if isinstance(_FLEET_MODELS_CACHE, dict) else None
+        models_list = []
+        if isinstance(cached, dict):
+            models_list = cached.get("models") or []
+        if models_list:
+            # Catalog populated for this provider → strict check
+            if model not in models_list:
+                raise HTTPException(status_code=400, detail=f"unknown model '{model}' for provider '{provider}'")
+        else:
+            # Catalog empty/failed for this provider → allow (warn in log)
+            try:
+                _log.warning("fleet models: allowing set for %s/%s without catalog validation (catalog empty)", provider, model)
+            except Exception:
+                pass
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+    # Persist atomically
+    try:
+        from hermes_cli import worker_backend as _wb
+        entry = _wb.set_worker_model(w, provider, model)
+        return {"worker": w, "provider": entry["provider"], "model": entry["model"]}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.delete("/api/fleet/models/{worker}")
+async def fleet_models_delete_worker(request: Request, worker: str):
+    _require_token(request)
+    w = (worker or "").strip()
+    if not w:
+        raise HTTPException(status_code=400, detail="worker must not be empty")
+    try:
+        from hermes_cli.workers import BUILTIN_WORKERS as _BUILTIN
+        from hermes_cli.workers import _read_custom_workers as _read_custom
+        from hermes_cli import worker_backend as _wb
+        from hermes_cli.config import get_hermes_home as _get_home
+        home = _get_home()
+        custom = {}
+        try:
+            custom = _read_custom(home)
+        except Exception:
+            custom = {}
+        allowed_workers = set(_BUILTIN.keys()) | set(custom.keys()) | set(_wb.BACKENDS.keys())
+        if w not in allowed_workers:
+            raise HTTPException(status_code=404, detail=f"unknown worker '{w}'")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+    try:
+        from hermes_cli import worker_backend as _wb
+        _wb.clear_worker_model(w)
+        return {"worker": w, "provider": "", "model": ""}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.get("/api/files")

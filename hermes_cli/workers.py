@@ -597,6 +597,57 @@ def run_workers_command(args) -> int:
 
         return run_benchmark_command(args)
 
+    if action in ("model",):
+        from hermes_cli.worker_backend import (
+            ALLOWED_MODEL_PROVIDERS as _ALLOWED_PROV,
+            _MODEL_RE as _MR,
+            get_worker_model as _get_wm,
+            set_worker_model as _set_wm,
+            clear_worker_model as _clear_wm,
+        )
+
+        worker = str(getattr(args, "worker", "") or "").strip()
+        model_arg = str(getattr(args, "model", "") or "").strip()
+        provider_arg = str(getattr(args, "provider", "") or "").strip()
+        clear_flag = bool(getattr(args, "clear", False))
+        custom = _read_custom_workers(hermes_home)
+        allowed_workers = set(BUILTIN_WORKERS.keys()) | set(custom.keys())
+        try:
+            from hermes_cli.worker_backend import BACKENDS as _BACKENDS
+
+            allowed_workers |= set(_BACKENDS.keys())
+        except Exception:
+            pass
+        if worker not in allowed_workers:
+            print(f"error: unknown worker '{worker}'", file=sys.stderr)
+            return 1
+        if clear_flag:
+            ok = _clear_wm(worker, hermes_home)
+            if ok:
+                print(f"Cleared model for '{worker}' (now uses default)")
+            else:
+                print(f"No pinned model for '{worker}' (already default)")
+            return 0
+        if not model_arg:
+            cur = _get_wm(worker, hermes_home)
+            if cur is None:
+                print(f"{worker}: (default) - no pinned model")
+            else:
+                print(f"{worker}: {cur['provider']} - {cur['model']}")
+            return 0
+        if not provider_arg:
+            print("error: --provider is required when setting a model", file=sys.stderr)
+            return 1
+        if provider_arg not in _ALLOWED_PROV:
+            print(f"error: invalid provider '{provider_arg}' (allowed: {', '.join(sorted(_ALLOWED_PROV))})", file=sys.stderr)
+            return 1
+        if not _MR.match(model_arg):
+            print(f"error: invalid model id '{model_arg}'", file=sys.stderr)
+            return 1
+        _set_wm(worker, provider_arg, model_arg, hermes_home)
+        print(f"Set {worker}: {provider_arg} - {model_arg}")
+        return 0
+
     if action in ("list", "ls", "status", None):
         workers = load_all_workers(hermes_home)
         fleet = _fleet_detected()

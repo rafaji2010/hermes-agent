@@ -7,6 +7,7 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { api } from "@/lib/api";
 import type { FleetHistoryEntry, FleetLiveExecution, FleetWorker } from "@/lib/api";
+import { FleetModelPicker } from "@/components/FleetModelPicker";
 
 const WORKER_NAMES = ["pi", "codex", "opencode", "commandcode", "dsh"] as const;
 
@@ -145,6 +146,11 @@ export default function FleetPage() {
   const [live, setLive] = useState<FleetLiveExecution[] | null>(null);
   const [history, setHistory] = useState<FleetHistoryEntry[]>([]);
   const [workers, setWorkers] = useState<FleetWorker[]>([]);
+  const [workerModels, setWorkerModels] = useState<Record<string, { provider: string; model: string }>>({});
+  const [catalog, setCatalog] = useState<{ providers: Record<string, { models: string[] }>; errors?: Record<string, string> } | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [modelToast, setModelToast] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cursor, setCursor] = useState(0);
   const [hotNodes, setHotNodes] = useState<Set<string>>(new Set());
@@ -175,6 +181,7 @@ export default function FleetPage() {
       setLive(res.live);
       setHistory(res.history);
       setWorkers(res.workers);
+      if (res.worker_models) setWorkerModels(res.worker_models);
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -183,6 +190,24 @@ export default function FleetPage() {
 
   useEffect(() => {
     void loadStatus();
+    let cancelled = false;
+    (async () => {
+      try {
+        setCatalogLoading(true);
+        const c = await api.getFleetModels();
+        if (!cancelled) {
+          setCatalog(c);
+          setCatalogError(null);
+        }
+      } catch (e) {
+        if (!cancelled) setCatalogError(String(e));
+      } finally {
+        if (!cancelled) setCatalogLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [loadStatus]);
 
   // Elapsed timer tick
@@ -280,6 +305,12 @@ export default function FleetPage() {
       </div>
 
       <FleetDiagram hotNodes={hotNodes} />
+      {modelToast && (
+        <div className="rounded-md border border-success/30 bg-success/10 px-3 py-2 text-xs text-success">{modelToast}</div>
+      )}
+      {catalogError && (
+        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{catalogError}</div>
+      )}
 
       {error ? (
         <Card><CardContent className="py-4 text-sm text-muted-foreground">{error}</CardContent></Card>
@@ -304,6 +335,52 @@ export default function FleetPage() {
                 )}
               </CardHeader>
               <CardContent className="flex flex-1 flex-col gap-2">
+                <FleetModelPicker
+                  worker={w}
+                  current={workerModels[w] ?? null}
+                  catalog={catalog}
+                  loading={catalogLoading}
+                  onSelect={async (provider, model) => {
+                    const prev = workerModels[w] ?? null;
+                    // Optimistic update
+                    setWorkerModels((m) => ({ ...m, [w]: { provider, model } }));
+                    try {
+                      const updated = await api.setFleetModel(w, provider, model);
+                      setWorkerModels((m) => ({ ...m, [w]: { provider: updated.provider, model: updated.model } }));
+                      setModelToast(`Model for ${w} set to ${provider} · ${model}`);
+                      setTimeout(() => setModelToast(null), 3000);
+                      // Re-fetch status to stay consistent, don't race with catalog
+                      void loadStatus();
+                    } catch (e) {
+                      // Revert
+                      setWorkerModels((m) => {
+                        const copy = { ...m };
+                        if (prev) copy[w] = prev;
+                        else delete copy[w];
+                        return copy;
+                      });
+                      setCatalogError(String(e));
+                      setTimeout(() => setCatalogError(null), 4000);
+                    }
+                  }}
+                  onClear={async () => {
+                    const prev = workerModels[w] ?? null;
+                    const copy = { ...workerModels };
+                    delete copy[w];
+                    setWorkerModels(copy);
+                    try {
+                      await api.clearFleetModel(w);
+                      setModelToast(`Model for ${w} reset to default`);
+                      setTimeout(() => setModelToast(null), 3000);
+                      void loadStatus();
+                    } catch (e) {
+                      if (prev) setWorkerModels((m) => ({ ...m, [w]: prev }));
+                      setCatalogError(String(e));
+                      setTimeout(() => setCatalogError(null), 4000);
+                    }
+                  }}
+                />
+                <p className="text-[11px] text-muted-foreground">Model changes apply to future fleet runs.</p>
                 {tasks.length === 0 ? (
                   <p className="py-2 text-center text-xs text-muted-foreground">idle</p>
                 ) : (

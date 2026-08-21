@@ -45,6 +45,7 @@ import re
 import select
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -527,6 +528,159 @@ def execution_history_path(hermes_home: Path | None = None) -> Path:
     return (hermes_home or get_hermes_home()) / EXECUTION_HISTORY_STORE
 
 
+# Persistence for per-harness model picker (profile-scoped, atomic).
+#: Filename for worker_models.json inside HERMES_HOME.
+WORKER_MODELS_FILE = "worker_models.json"
+
+#: Allowed provider slugs for worker model picker.
+ALLOWED_MODEL_PROVIDERS = frozenset({"opencode-go", "commandcode", "openrouter"})
+
+#: Regex for model IDs (prompt § Validation).
+_MODEL_RE = re.compile(r"^[A-Za-z0-9._/:-]{1,128}$")
+
+#: Allowed harness/worker names that may have a pinned model.
+#  Re-export BUILTIN_WORKERS keys for validation; custom workers handled via workers._read_custom_workers.
+_ALLOWED_WORKERS = frozenset(workers.BUILTIN_WORKERS.keys())
+
+
+def worker_models_path(hermes_home: Path | None = None) -> Path:
+    """Path to worker_models.json (profile-aware)."""
+    return (hermes_home or get_hermes_home()) / WORKER_MODELS_FILE
+
+
+def _read_worker_models(hermes_home: Path | None = None) -> dict:
+    """Load worker_models.json → {worker: {provider, model}}.
+
+    On corrupted JSON, backs up to worker_models.json.corrupt.<ts> and returns {}.
+    """
+    path = worker_models_path(hermes_home)
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        # Backup corrupt file
+        try:
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            backup = path.with_name(f"{path.name}.corrupt.{ts}")
+            # Avoid clobber
+            if not backup.exists():
+                # Use read_bytes to preserve content even if partially written
+                try:
+                    data = path.read_bytes()
+                    backup.write_bytes(data)
+                except OSError:
+                    pass
+        except Exception:
+            pass
+        _log_worker_models_warning(f"worker_models.json corrupted, treating as empty: {exc}")
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    # Keep only dict entries with required keys sanitized
+    out: dict = {}
+    for k, v in raw.items():
+        if not isinstance(k, str):
+            continue
+        kk = k.strip()
+        if not kk:
+            continue
+        if not isinstance(v, dict):
+            continue
+        provider = str(v.get("provider") or "").strip()
+        model = str(v.get("model") or "").strip()
+        # Basic sanity: provider in allowlist or empty, model regex; keep entry even if invalid per file read
+        # so callers can surface it; but filter to only valid shapes here for safety.
+        # Keep raw entry; validation is done on write/path.
+        out[kk] = {"provider": provider, "model": model}
+    return out
+
+
+def _log_worker_models_warning(msg: str) -> None:
+    try:
+        import logging
+
+        logging.getLogger(__name__).warning(msg)
+    except Exception:
+        pass
+
+
+def get_worker_model(worker: str, hermes_home: Path | None = None) -> dict | None:
+    """Return {provider, model} for a worker or None when not pinned."""
+    data = _read_worker_models(hermes_home)
+    entry = data.get(worker)
+    if isinstance(entry, dict) and entry.get("provider") and entry.get("model"):
+        return {"provider": str(entry["provider"]), "model": str(entry["model"])}
+    return None
+
+
+def set_worker_model(
+    worker: str,
+    provider: str,
+    model: str,
+    hermes_home: Path | None = None,
+) -> dict:
+    """Persist a worker model pin atomically (tmp+rename, 0o600). Returns entry."""
+    home = hermes_home or get_hermes_home()
+    path = worker_models_path(home)
+    # Read current (handles corrupt backup)
+    current = _read_worker_models(home)
+    current[worker] = {"provider": provider, "model": model}
+    _write_worker_models_atomic(current, home)
+    return {"provider": provider, "model": model}
+
+
+def clear_worker_model(worker: str, hermes_home: Path | None = None) -> bool:
+    """Remove a worker entry. Returns True if existed."""
+    home = hermes_home or get_hermes_home()
+    current = _read_worker_models(home)
+    if worker not in current:
+        return False
+    current.pop(worker, None)
+    _write_worker_models_atomic(current, home)
+    return True
+
+
+def _write_worker_models_atomic(data: dict, hermes_home: Path | None = None) -> Path:
+    """Atomic write of worker_models.json (tmp+rename, 0o600)."""
+    home = hermes_home or get_hermes_home()
+    path = worker_models_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # mkstemp in same dir for atomic rename
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+            fh.write("\n")
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+        try:
+            os.chmod(tmp_path, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp_path, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+    return path
+
+
+def load_worker_models(hermes_home: Path | None = None) -> dict:
+    """Public read helper for tests/routes."""
+    return _read_worker_models(hermes_home)
+
+
 def live_executions_path(hermes_home: Path | None = None) -> Path:
     """Path to the live-executions registry (profile-aware, §28)."""
     return (hermes_home or get_hermes_home()) / LIVE_EXECUTIONS_STORE
@@ -690,7 +844,7 @@ def _worker_config(worker_type: str, constraints: dict, hermes_home) -> tuple[st
     """Best-effort model/provider defaults for a worker.
 
     Resolution order: ``constraints`` (explicit CLI ``--model``/``--provider``
-    overrides) → a ``workers.<type>.model`` / ``workers.<type>.provider`` block
+    overrides) → worker_models.json (per-harness pin) → a ``workers.<type>.model`` / ``workers.<type>.provider`` block
     in config.yaml → (``""``, ``""``). The global Hermes ``model`` section is
     deliberately NOT forwarded — external harnesses carry their own model
     config and Hermes' chat/image models rarely map to theirs (and the section
@@ -701,6 +855,24 @@ def _worker_config(worker_type: str, constraints: dict, hermes_home) -> tuple[st
     provider = str(constraints.get("provider") or "")
     if model and provider:
         return model, provider
+
+    # worker_models.json precedence (profile-scoped)
+    try:
+        wm = _read_worker_models(hermes_home)
+        entry_wm = wm.get(worker_type)
+        if isinstance(entry_wm, dict):
+            if not model:
+                m = str(entry_wm.get("model") or "")
+                if m:
+                    model = m
+            if not provider:
+                p = str(entry_wm.get("provider") or "")
+                if p:
+                    provider = p
+            if model and provider:
+                return model, provider
+    except Exception:
+        pass
 
     parsed: dict = {}
     path = (hermes_home or get_hermes_home()) / "config.yaml"
@@ -726,12 +898,47 @@ class PiBackend(SubprocessBackend):
     worker_type = "pi"
 
     def _build_command(self, request: WorkerSpec) -> list[str]:
+        # Per-harness model pin via worker_models.json → config.yaml
+        model, _ = _worker_config("pi", request.constraints, None)
         command = ["pi"]
         flag = detect_pi_flag()
         if flag:
             command.append(flag)
+        # Only pass --model if pi advertises it; otherwise skip (documented fallback)
+        if model and _pi_supports_model():
+            command += ["--model", model]
         command.append(request.task)
         return command
+
+
+_PI_MODEL_FLAG: object | str | None = object()
+
+def _pi_supports_model(timeout: int = 5) -> bool:
+    """Probe whether ``pi --help`` advertises a ``--model`` flag. Cached."""
+    global _PI_MODEL_FLAG
+    if _PI_MODEL_FLAG is not object():
+        return bool(_PI_MODEL_FLAG)
+    flag: str | None = None
+    try:
+        import subprocess as _sp
+        result = _sp.run(
+            ["pi", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        txt = f"{result.stdout or ''}\n{result.stderr or ''}"
+        if "--model" in txt:
+            flag = "--model"
+    except Exception:
+        flag = None
+    _PI_MODEL_FLAG = flag
+    return bool(flag)
+
+def reset_pi_model_flag_cache() -> None:
+    global _PI_MODEL_FLAG
+    _PI_MODEL_FLAG = object()
 
 
 class CodexBackend(SubprocessBackend):
@@ -778,14 +985,19 @@ class CommandCodeBackend(SubprocessBackend):
 
     The binary is resolved via the workers registry's extra locations
     (``~/.nvm/versions/node/*/bin/commandcode``) when not on PATH.
+
     """
 
     worker_type = "commandcode"
 
     def _build_command(self, request: WorkerSpec) -> list[str]:
+        model, _ = _worker_config("commandcode", request.constraints, None)
         binary = resolve_binary("commandcode")
         command = [str(binary) if binary is not None else "commandcode"]
-        command += ["-p", "--yolo", request.task]
+        command += ["-p", "--yolo"]
+        if model:
+            command += ["-m", model]
+        command.append(request.task)
         return command
 
 
@@ -800,6 +1012,7 @@ class DshBackend(SubprocessBackend):
     worker_type = "dsh"
 
     def _build_command(self, request: WorkerSpec) -> list[str]:
+        # Per spec File-write layering: do NOT write ~/.dsh/settings.yaml here.
         return ["dsh", "--profile", "headless", request.task]
 
 

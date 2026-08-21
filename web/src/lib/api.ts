@@ -1342,6 +1342,19 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ task, worker: worker || undefined }),
     }),
+  getFleetModels: () => fetchJSON<FleetModelsResponse>("/api/fleet/models"),
+  getFleetModel: (worker: string) =>
+    fetchJSON<FleetModelResponse>(`/api/fleet/models/${encodeURIComponent(worker)}`),
+  setFleetModel: (worker: string, provider: string, model: string) =>
+    fetchJSON<FleetModelResponse>(`/api/fleet/models/${encodeURIComponent(worker)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider, model }),
+    }),
+  clearFleetModel: (worker: string) =>
+    fetchJSON<FleetModelResponse>(`/api/fleet/models/${encodeURIComponent(worker)}`, {
+      method: "DELETE",
+    }),
 };
 
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).
@@ -2766,6 +2779,18 @@ export interface FleetStatusResponse {
   history: FleetHistoryEntry[];
   workers: FleetWorker[];
   timestamp: number;
+  worker_models?: Record<string, { provider: string; model: string }>;
+}
+
+export interface FleetModelsResponse {
+  providers: Record<string, { models: string[] }>;
+  errors?: Record<string, string>;
+}
+
+export interface FleetModelResponse {
+  worker: string;
+  provider: string;
+  model: string;
 }
 
 export interface FleetEvent {
