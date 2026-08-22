@@ -166,6 +166,7 @@ function ModelEditSubmenuBody({
                 className={dropdownMenuRow}
                 key={value}
                 onSelect={event => event.preventDefault()}
+                title={value === 'ultra' ? 'Ultra — sent as max on the wire (OpenAI-compatible clamp)' : undefined}
                 value={value}
               >
                 {copy[value]}

@@ -94,19 +94,25 @@ export function FleetModelPicker(props: FleetModelPickerProps): JSX.Element {
     const out: ModelGroup[] = [];
     let start = 0;
     for (const [provider, entry] of Object.entries(providers)) {
+      const error = errors?.[provider];
       const models: ModelOption[] = [];
       for (const model of entry?.models ?? []) {
         if (!q || model.toLowerCase().includes(q)) {
           models.push({ provider, model });
         }
       }
-      if (models.length === 0) continue;
+      // Show provider group if it has matching models OR has an error to surface.
+      // This fixes cold-cache invisibility: a 403-era empty catalog still shows
+      // its banner ("Failed to load …") instead of vanishing behind "No models available."
+      if (models.length === 0 && !error) continue;
+      // When search filters out all models for a provider that has an error, keep
+      // the group so the banner remains visible even with 0 filtered models.
       out.push({
         provider,
         label: providerLabel(provider),
         start,
         models,
-        error: errors?.[provider],
+        error,
       });
       start += models.length;
     }
@@ -392,7 +398,7 @@ export function FleetModelPicker(props: FleetModelPickerProps): JSX.Element {
                           }`}
                         />
                         <span
-                          title={opt.model}
+                          title={`${opt.provider} · ${opt.model}`}
                           className="min-w-0 flex-1 break-all font-mono text-xs leading-snug"
                         >
                           {opt.model}

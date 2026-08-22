@@ -347,7 +347,7 @@ export default function FleetPage() {
       ) : null}
 
       {/* Worker rows — one harness per row, full-width horizontal cards */}
-      <div className="grid grid-cols-1 gap-3">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
         {WORKER_NAMES.map((w) => {
           const label = w === "dsh" ? "dsh" : w.charAt(0).toUpperCase() + w.slice(1);
           const info = workers.find((x) => x.name === w);

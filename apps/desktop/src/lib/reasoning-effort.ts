@@ -2,7 +2,11 @@ import { normalize } from '@/lib/text'
 
 /** Hermes' reasoning levels, in ascending order — mirrors the backend's
  *  VALID_REASONING_EFFORTS (hermes_constants.py). `none` is not a level: it's
- *  thinking disabled, owned by the Thinking toggle rather than the scale. */
+ *  thinking disabled, owned by the Thinking toggle rather than the scale.
+ *  `ultra` is a Hermes-side label — it is offered in the desktop picker but
+ *  clamped to `max` on the wire for OpenAI-compatible gateways
+ *  (agent/transports/chat_completions.py:_reasoning_config_for_model) and
+ *  for Codex Responses on gpt-5.6 (agent/transports/codex.py). */
 export const REASONING_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const
 
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number]
