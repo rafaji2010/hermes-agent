@@ -238,7 +238,7 @@ export function FleetModelPicker(props: FleetModelPickerProps): JSX.Element {
     <div
       ref={rootRef}
       data-testid="fleet-model-picker"
-      className="rounded-md border bg-card px-2 py-1.5 text-sm shadow-sm"
+      className="relative rounded-md border bg-card px-2 py-1.5 text-sm shadow-sm"
     >
       <div className="flex items-center gap-1">
         <button
@@ -255,12 +255,13 @@ export function FleetModelPicker(props: FleetModelPickerProps): JSX.Element {
           }
           className="flex min-w-0 flex-1 items-center justify-between gap-2 rounded-md px-1 py-0.5 text-left outline-none hover:bg-secondary/40 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
         >
-          <span className="min-w-0">
+          <span className="min-w-0 flex-1">
             <span className="block text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
               {providerLabel(worker)} model
             </span>
             <span
-              className={`block truncate font-mono text-[11px] ${
+              title={summary ?? "Use default"}
+              className={`block break-all font-mono text-[11px] leading-snug ${
                 summary ? "text-foreground" : "text-muted-foreground"
               }`}
             >
@@ -303,29 +304,31 @@ export function FleetModelPicker(props: FleetModelPickerProps): JSX.Element {
           </p>
         </div>
       ) : showList ? (
-        <div className="mt-1.5 border-t border-border/60 pt-1.5">
-          <div className="relative">
-            <Search
-              aria-hidden="true"
-              className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
-            />
-            <input
-              data-testid="fleet-model-search"
-              type="text"
-              role="combobox"
-              aria-expanded="true"
-              aria-controls={listboxId}
-              aria-autocomplete="list"
-              aria-activedescendant={
-                active >= 0 ? optionId(active) : undefined
-              }
-              aria-label={`Search models for ${providerLabel(worker)}`}
-              value={query}
-              onChange={handleQueryChange}
-              onKeyDown={handleKeyDown}
-              placeholder="Search models…"
-              className="w-full rounded-md border bg-background py-1.5 pl-7 pr-2 text-xs outline-none focus:ring-2 focus:ring-ring"
-            />
+        <div className="absolute left-0 top-full z-30 mt-2 w-[min(560px,90vw)] min-w-[min(480px,100%)] overflow-hidden rounded-md border bg-popover shadow-lg">
+          <div className="p-2">
+            <div className="relative">
+              <Search
+                aria-hidden="true"
+                className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+              />
+              <input
+                data-testid="fleet-model-search"
+                type="text"
+                role="combobox"
+                aria-expanded="true"
+                aria-controls={listboxId}
+                aria-autocomplete="list"
+                aria-activedescendant={
+                  active >= 0 ? optionId(active) : undefined
+                }
+                aria-label={`Search models for ${providerLabel(worker)}`}
+                value={query}
+                onChange={handleQueryChange}
+                onKeyDown={handleKeyDown}
+                placeholder="Search models…"
+                className="w-full rounded-md border bg-background py-1.5 pl-7 pr-2 text-xs outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
           </div>
 
           <div
@@ -334,12 +337,12 @@ export function FleetModelPicker(props: FleetModelPickerProps): JSX.Element {
             role="listbox"
             data-testid="fleet-model-listbox"
             aria-label={`Models for ${providerLabel(worker)}`}
-            className="mt-1.5 max-h-56 overflow-y-auto"
+            className="max-h-56 overflow-y-auto border-t"
           >
             {filtered.length === 0 ? (
               <div
                 role="presentation"
-                className="px-2 py-2 text-xs italic text-muted-foreground"
+                className="px-3 py-3 text-xs italic text-muted-foreground"
               >
                 {totalModels === 0
                   ? "No models available."
@@ -352,12 +355,12 @@ export function FleetModelPicker(props: FleetModelPickerProps): JSX.Element {
                     <div
                       role="alert"
                       data-testid={`fleet-model-error-${g.provider}`}
-                      className="mx-1 mt-1 flex items-start gap-1 rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-[11px] text-destructive"
+                      className="mx-2 mt-2 flex items-start gap-1 rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-[11px] text-destructive"
                     >
                       Failed to load {g.label} models — showing stale/empty.
                     </div>
                   )}
-                  <div className="sticky top-0 z-10 bg-muted/60 px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                  <div className="sticky top-0 z-10 bg-muted/80 px-3 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground backdrop-blur-sm">
                     {g.label}
                   </div>
                   {g.models.map((opt, j) => {
@@ -371,9 +374,10 @@ export function FleetModelPicker(props: FleetModelPickerProps): JSX.Element {
                         role="option"
                         aria-selected={cur}
                         data-testid={`fleet-model-option-${g.provider}-${opt.model}`}
+                        title={`${opt.provider} · ${opt.model}`}
                         onClick={() => selectOption(opt)}
                         onMouseEnter={() => setActiveIndex(i)}
-                        className={`flex cursor-pointer select-none items-center gap-2 px-2 py-1.5 text-xs ${
+                        className={`flex cursor-pointer select-none items-start gap-2 px-3 py-1.5 text-xs ${
                           act
                             ? "bg-accent text-accent-foreground"
                             : cur
@@ -383,11 +387,14 @@ export function FleetModelPicker(props: FleetModelPickerProps): JSX.Element {
                       >
                         <Check
                           aria-hidden="true"
-                          className={`h-3 w-3 shrink-0 ${
+                          className={`mt-0.5 h-3 w-3 shrink-0 ${
                             cur ? "opacity-100 text-primary" : "opacity-0"
                           }`}
                         />
-                        <span className="min-w-0 flex-1 truncate font-mono">
+                        <span
+                          title={opt.model}
+                          className="min-w-0 flex-1 break-all font-mono text-xs leading-snug"
+                        >
                           {opt.model}
                         </span>
                         {cur && (
