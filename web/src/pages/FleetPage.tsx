@@ -318,15 +318,15 @@ export default function FleetPage() {
         <div className="flex min-h-[120px] items-center justify-center"><Spinner /></div>
       ) : null}
 
-      {/* Worker columns with live task cards */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      {/* Worker rows — one harness per row, full-width horizontal cards */}
+      <div className="grid grid-cols-1 gap-3">
         {WORKER_NAMES.map((w) => {
           const label = w === "dsh" ? "dsh" : w.charAt(0).toUpperCase() + w.slice(1);
           const info = workers.find((x) => x.name === w);
           const tasks = byWorker.get(w) ?? [];
           return (
-            <Card key={w} className="flex flex-col">
-              <CardHeader className="pb-2">
+            <Card key={w} className="flex flex-col overflow-visible lg:flex-row lg:items-stretch">
+              <CardHeader className="shrink-0 pb-3 lg:w-[200px] lg:border-b-0 lg:border-r lg:border-midground/15">
                 <CardTitle className="text-sm">{label}</CardTitle>
                 {info ? (
                   <p className="text-xs text-muted-foreground">{info.version ?? "—"} · {(info.capabilities ?? []).slice(0, 3).join(", ")}</p>
@@ -334,58 +334,62 @@ export default function FleetPage() {
                   <p className="text-xs text-muted-foreground">not installed</p>
                 )}
               </CardHeader>
-              <CardContent className="flex flex-1 flex-col gap-2">
-                <FleetModelPicker
-                  worker={w}
-                  current={workerModels[w] ?? null}
-                  catalog={catalog}
-                  loading={catalogLoading}
-                  onSelect={async (provider, model) => {
-                    const prev = workerModels[w] ?? null;
-                    // Optimistic update
-                    setWorkerModels((m) => ({ ...m, [w]: { provider, model } }));
-                    try {
-                      const updated = await api.setFleetModel(w, provider, model);
-                      setWorkerModels((m) => ({ ...m, [w]: { provider: updated.provider, model: updated.model } }));
-                      setModelToast(`Model for ${w} set to ${provider} · ${model}`);
-                      setTimeout(() => setModelToast(null), 3000);
-                      // Re-fetch status to stay consistent, don't race with catalog
-                      void loadStatus();
-                    } catch (e) {
-                      // Revert
-                      setWorkerModels((m) => {
-                        const copy = { ...m };
-                        if (prev) copy[w] = prev;
-                        else delete copy[w];
-                        return copy;
-                      });
-                      setCatalogError(String(e));
-                      setTimeout(() => setCatalogError(null), 4000);
-                    }
-                  }}
-                  onClear={async () => {
-                    const prev = workerModels[w] ?? null;
-                    const copy = { ...workerModels };
-                    delete copy[w];
-                    setWorkerModels(copy);
-                    try {
-                      await api.clearFleetModel(w);
-                      setModelToast(`Model for ${w} reset to default`);
-                      setTimeout(() => setModelToast(null), 3000);
-                      void loadStatus();
-                    } catch (e) {
-                      if (prev) setWorkerModels((m) => ({ ...m, [w]: prev }));
-                      setCatalogError(String(e));
-                      setTimeout(() => setCatalogError(null), 4000);
-                    }
-                  }}
-                />
-                <p className="text-[11px] text-muted-foreground">Model changes apply to future fleet runs.</p>
-                {tasks.length === 0 ? (
-                  <p className="py-2 text-center text-xs text-muted-foreground">idle</p>
-                ) : (
-                  tasks.map((ex) => <LiveCard key={ex.execution_id} exec={ex} tick={tick} />)
-                )}
+              <CardContent className="flex flex-1 flex-col gap-3 overflow-visible lg:flex-row lg:items-start lg:gap-4">
+                <div className="min-w-0 flex-1 lg:max-w-[520px]">
+                  <FleetModelPicker
+                    worker={w}
+                    current={workerModels[w] ?? null}
+                    catalog={catalog}
+                    loading={catalogLoading}
+                    onSelect={async (provider, model) => {
+                      const prev = workerModels[w] ?? null;
+                      // Optimistic update
+                      setWorkerModels((m) => ({ ...m, [w]: { provider, model } }));
+                      try {
+                        const updated = await api.setFleetModel(w, provider, model);
+                        setWorkerModels((m) => ({ ...m, [w]: { provider: updated.provider, model: updated.model } }));
+                        setModelToast(`Model for ${w} set to ${provider} · ${model}`);
+                        setTimeout(() => setModelToast(null), 3000);
+                        // Re-fetch status to stay consistent, don't race with catalog
+                        void loadStatus();
+                      } catch (e) {
+                        // Revert
+                        setWorkerModels((m) => {
+                          const copy = { ...m };
+                          if (prev) copy[w] = prev;
+                          else delete copy[w];
+                          return copy;
+                        });
+                        setCatalogError(String(e));
+                        setTimeout(() => setCatalogError(null), 4000);
+                      }
+                    }}
+                    onClear={async () => {
+                      const prev = workerModels[w] ?? null;
+                      const copy = { ...workerModels };
+                      delete copy[w];
+                      setWorkerModels(copy);
+                      try {
+                        await api.clearFleetModel(w);
+                        setModelToast(`Model for ${w} reset to default`);
+                        setTimeout(() => setModelToast(null), 3000);
+                        void loadStatus();
+                      } catch (e) {
+                        if (prev) setWorkerModels((m) => ({ ...m, [w]: prev }));
+                        setCatalogError(String(e));
+                        setTimeout(() => setCatalogError(null), 4000);
+                      }
+                    }}
+                  />
+                  <p className="mt-1.5 text-[11px] text-muted-foreground">Model changes apply to future fleet runs.</p>
+                </div>
+                <div className="flex min-w-0 flex-1 flex-col gap-2 lg:min-w-[260px]">
+                  {tasks.length === 0 ? (
+                    <p className="rounded-md border border-dashed bg-muted/30 px-3 py-3 text-center text-xs text-muted-foreground lg:mt-1">idle</p>
+                  ) : (
+                    tasks.map((ex) => <LiveCard key={ex.execution_id} exec={ex} tick={tick} />)
+                  )}
+                </div>
               </CardContent>
             </Card>
           );
