@@ -2762,7 +2762,7 @@ def _fleet_models_parse_ids(payload) -> list[str]:
 def _fleet_fetch_opencode_sync() -> list[str]:
     url = "https://opencode.ai/zen/go/v1/models"
     key = _fleet_models_load_opencode_key()
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = {"User-Agent": "Hermes-Fleet/1.0"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
     req = urllib.request.Request(url, headers=headers, method="GET")
@@ -2776,7 +2776,7 @@ def _fleet_fetch_opencode_sync() -> list[str]:
 def _fleet_fetch_commandcode_sync() -> list[str]:
     url = "https://api.commandcode.ai/provider/v1/models"
     key = _fleet_models_load_commandcode_key()
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = {"User-Agent": "Hermes-Fleet/1.0"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
     req = urllib.request.Request(url, headers=headers, method="GET")
@@ -2789,7 +2789,7 @@ def _fleet_fetch_commandcode_sync() -> list[str]:
 
 def _fleet_fetch_openrouter_sync() -> list[str]:
     url = "https://openrouter.ai/api/v1/models"
-    req = urllib.request.Request(url, headers={}, method="GET")
+    req = urllib.request.Request(url, headers={"User-Agent": "Hermes-Fleet/1.0"}, method="GET")
     with urllib.request.urlopen(req, timeout=5) as resp:
         raw = resp.read()
         text = raw.decode("utf-8", errors="replace")
