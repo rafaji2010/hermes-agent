@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { useI18n } from '@/i18n'
@@ -9,6 +9,7 @@ import { normalize } from '@/lib/text'
 import type { ModelOptionProvider, ModelPricing } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
+import { Codicon } from '@/components/ui/codicon'
 import { cn } from '../lib/utils'
 import { startManualOnboarding } from '../store/onboarding'
 
@@ -50,6 +51,8 @@ export function ModelPickerDialog({
 }: ModelPickerDialogProps) {
   const { t } = useI18n()
   const copy = t.modelPicker
+  const queryClient = useQueryClient()
+  const [refreshing, setRefreshing] = useState(false)
   // Own the search term so we can filter manually. cmdk's built-in
   // shouldFilter reorders items by its fuzzy-match score (≈alphabetical with
   // an empty query), which destroys the backend's curated order. We disable
@@ -92,6 +95,31 @@ export function ModelPickerDialog({
     onOpenChange(false)
   }
 
+  // Explicit "Refresh Models": re-fetch with refresh:true so the backend busts
+  // its 1h provider-model disk cache. Mirrors ModelMenuPanel.refreshModels so
+  // both the live dropdown and the fallback dialog share the same semantics.
+  const refreshModels = async () => {
+    if (refreshing) {
+      return
+    }
+
+    setRefreshing(true)
+
+    try {
+      const queryKey = modelOptionsQueryKey(profile, sessionId)
+      const next = await requestModelOptions({ gateway: gw, refresh: true, sessionId })
+      queryClient.setQueryData(queryKey, next)
+      // Also bust any other cached model-options (different profile/session) so
+      // a subsequent open elsewhere sees the fresh catalog without needing its
+      // own explicit refresh.
+      void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+    } catch {
+      void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent
@@ -122,13 +150,24 @@ export function ModelPickerDialog({
           </CommandList>
         </Command>
 
-        <DialogFooter className="flex-row items-center justify-end gap-2 bg-card p-3">
-          <Button onClick={addProvider} variant="ghost">
-            {copy.addProvider}
+        <DialogFooter className="flex-row items-center justify-between gap-2 bg-card p-3">
+          <Button
+            data-testid="model-picker-refresh"
+            disabled={refreshing}
+            onClick={() => void refreshModels()}
+            variant="ghost"
+          >
+            <Codicon className={cn(refreshing && 'animate-spin')} name="sync" size="0.75rem" />
+            {t.shell.modelMenu.refreshModels}
           </Button>
-          <Button onClick={() => onOpenChange(false)} variant="outline">
-            {t.common.cancel}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button onClick={addProvider} variant="ghost">
+              {copy.addProvider}
+            </Button>
+            <Button onClick={() => onOpenChange(false)} variant="outline">
+              {t.common.cancel}
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>
