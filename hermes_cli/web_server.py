@@ -3053,23 +3053,39 @@ async def fleet_run(request: Request, body: FleetRunRequest):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/fleet/models")
-async def fleet_models(request: Request):
+async def fleet_models(request: Request, refresh: int = Query(0, ge=0, le=1)):
     _require_token(request)
     global _FLEET_MODELS_TASK, _FLEET_MODELS_CACHE, _FLEET_MODELS_AT
-    # TTL check: serve cached if within 1h
+    # TTL check: serve cached if within 1h (bypass if ?refresh=1)
     now = time.time()
-    if _FLEET_MODELS_AT is not None and _FLEET_MODELS_CACHE and (now - _FLEET_MODELS_AT) < _FLEET_MODELS_TTL:
-        # Remaining TTL for header
-        remaining = max(0, int(_FLEET_MODELS_TTL - (now - _FLEET_MODELS_AT)))
-        # Determine if cached had any prior error? We don't cache errors, so treat as success
-        # Re-compose providers shape from cache
-        providers = {k: {"models": list(v.get("models", []))} for k, v in _FLEET_MODELS_CACHE.items()}
-        # Ensure all providers present
-        for prov in ("opencode-go", "commandcode", "openrouter"):
-            if prov not in providers:
-                providers[prov] = {"models": []}
-        headers = {"Cache-Control": f"public, max-age={remaining}"}
-        return JSONResponse({"providers": providers}, headers=headers)
+    is_refresh = bool(refresh) or request.query_params.get("refresh") == "1"
+    if not is_refresh and _FLEET_MODELS_AT is not None and _FLEET_MODELS_CACHE and (now - _FLEET_MODELS_AT) < _FLEET_MODELS_TTL:
+        # Stale-cache guard: if cached providers have empty models arrays (403-era),
+        # treat as cache miss even within TTL and force a fresh fetch.
+        has_empty = False
+        try:
+            for prov in ("opencode-go", "commandcode", "openrouter"):
+                entry = _FLEET_MODELS_CACHE.get(prov)
+                if not isinstance(entry, dict):
+                    has_empty = True
+                    break
+                models = entry.get("models")
+                if not isinstance(models, list) or len(models) == 0:
+                    has_empty = True
+                    break
+        except Exception:
+            has_empty = False
+        if not has_empty:
+            # Remaining TTL for header
+            remaining = max(0, int(_FLEET_MODELS_TTL - (now - _FLEET_MODELS_AT)))
+            # Re-compose providers shape from cache
+            providers = {k: {"models": list(v.get("models", []))} for k, v in _FLEET_MODELS_CACHE.items()}
+            # Ensure all providers present
+            for prov in ("opencode-go", "commandcode", "openrouter"):
+                if prov not in providers:
+                    providers[prov] = {"models": []}
+            headers = {"Cache-Control": f"public, max-age={remaining}"}
+            return JSONResponse({"providers": providers}, headers=headers)
     # Single-flight: if fetch in-flight, await it
     if _FLEET_MODELS_TASK is not None:
         try:

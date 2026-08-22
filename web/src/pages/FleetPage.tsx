@@ -188,6 +188,19 @@ export default function FleetPage() {
     }
   }, []);
 
+  const refreshCatalog = useCallback(async (opts?: { refresh?: boolean }) => {
+    try {
+      setCatalogLoading(true);
+      const c = await api.getFleetModels(opts);
+      setCatalog(c);
+      setCatalogError(null);
+    } catch (e) {
+      setCatalogError(String(e));
+    } finally {
+      setCatalogLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadStatus();
     let cancelled = false;
@@ -311,6 +324,21 @@ export default function FleetPage() {
       {catalogError && (
         <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{catalogError}</div>
       )}
+
+      <div className="flex justify-end">
+        <Button
+          ghost
+          size="sm"
+          onClick={() => void refreshCatalog({ refresh: true })}
+          disabled={catalogLoading}
+          aria-label="Refresh model catalog"
+          data-testid="fleet-models-refresh"
+          className="h-7 px-2 text-xs"
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${catalogLoading ? "animate-spin" : ""}`} />
+          Refresh
+        </Button>
+      </div>
 
       {error ? (
         <Card><CardContent className="py-4 text-sm text-muted-foreground">{error}</CardContent></Card>

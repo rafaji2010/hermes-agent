@@ -1342,7 +1342,10 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ task, worker: worker || undefined }),
     }),
-  getFleetModels: () => fetchJSON<FleetModelsResponse>("/api/fleet/models"),
+  getFleetModels: (opts?: { refresh?: boolean }) =>
+    fetchJSON<FleetModelsResponse>(
+      `/api/fleet/models${opts?.refresh ? "?refresh=1" : ""}`,
+    ),
   getFleetModel: (worker: string) =>
     fetchJSON<FleetModelResponse>(`/api/fleet/models/${encodeURIComponent(worker)}`),
   setFleetModel: (worker: string, provider: string, model: string) =>
