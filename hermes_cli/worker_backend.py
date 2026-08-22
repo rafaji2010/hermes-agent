@@ -40,6 +40,7 @@ Design notes:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import select
@@ -620,13 +621,31 @@ def set_worker_model(
     model: str,
     hermes_home: Path | None = None,
 ) -> dict:
-    """Persist a worker model pin atomically (tmp+rename, 0o600). Returns entry."""
+    """Persist a worker model pin atomically (tmp+rename, 0o600). Returns entry.
+
+    Also propagates the pick into the harness's native config
+    (~/.opencode/opencode.jsonc, ~/.commandcode/config.json,
+    ~/.codex/config.toml, ~/.dsh/settings.yaml) so direct CLI runs use the
+    same model as fleet dispatch. Best-effort: a sync failure never fails
+    the pin itself.
+    """
     home = hermes_home or get_hermes_home()
     path = worker_models_path(home)
     # Read current (handles corrupt backup)
     current = _read_worker_models(home)
     current[worker] = {"provider": provider, "model": model}
     _write_worker_models_atomic(current, home)
+    # Propagate to native harness configs (Fleet picker → everywhere).
+    try:
+        from hermes_cli.harness_model_sync import sync_native_configs
+
+        report = sync_native_configs(worker, provider, model, home)
+        for err in report.get("errors", ()):
+            logging.getLogger(__name__).warning(
+                "harness model sync error (%s/%s@%s): %s", worker, provider, model, err
+            )
+    except Exception as exc:
+        logging.getLogger(__name__).warning("harness model sync failed: %s", exc)
     return {"provider": provider, "model": model}
 
 
