@@ -1216,6 +1216,48 @@ def _format_update_failure_stage(exc: subprocess.CalledProcessError) -> str:
     return "Update step failed"
 
 
+def _shim_quarantine_error_type() -> "type[BaseException]":
+    """The strict-quarantine refusal type, resolved lazily through ``_m()``.
+
+    Falls back to a never-raised private type when main.py lacks it (torn
+    mid-update tree), so the ``except`` clause stays valid.
+    """
+    cls = getattr(_m(), "ShimQuarantineError", None)
+    if isinstance(cls, type) and issubclass(cls, BaseException):
+        return cls
+
+    class _Never(Exception):
+        pass
+
+    return _Never
+
+
+def _refuse_update_for_contended_shims(exc: BaseException) -> None:
+    """Refuse the dependency sync when live shims could not be quarantined.
+
+    #87331 fail-closed half: a shim rename that failed every retry proves a
+    process holds the venv without FILE_SHARE_DELETE — running the installer
+    anyway is exactly how the venv ends up stranded between versions. The
+    code swap (when one happened) is already committed; only the dependency
+    install is deferred, via the update-incomplete marker, to the next fresh
+    launch after the holder exits. Exits 2 (refused) so the command-boundary
+    receipt net records it as a refusal, not a failure.
+    """
+    print("✗ Cannot continue the update: live Hermes launcher(s) could not be")
+    print("  moved aside:")
+    for name in getattr(exc, "failed_shims", []) or ["hermes.exe"]:
+        print(f"    {name}")
+    print("  Another process is holding this install's venv — typically Hermes")
+    print("  Desktop, a gateway, or another hermes REPL — and mutating the venv")
+    print("  now would strand it half-updated.")
+    print("  The dependency install has been deferred: close the process(es)")
+    print("  above, then run any `hermes` command to finish it automatically.")
+    # Idempotent: the git path already dropped the marker before the sync;
+    # this covers the ZIP/repair paths so the deferral is never silent.
+    _write_update_incomplete_marker()
+    sys.exit(2)
+
+
 def _should_zip_fallback_on_update_error(exc: BaseException) -> bool:
     """ZIP fallback is for Windows git file-I/O breakage, not later stages.
 
@@ -1627,7 +1669,13 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
         if _m()._is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
-        _m()._install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
+        try:
+            _m()._install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
+        except _shim_quarantine_error_type() as _sqe:
+            # #87331: this runs inside the ZIP-fallback error handler, so the
+            # boundary except clause in cmd_update cannot catch it — refuse
+            # here with the same defer-via-marker contract.
+            _refuse_update_for_contended_shims(_sqe)
     else:
         # Use sys.executable to explicitly call the venv's pip module,
         # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
@@ -3410,12 +3458,7 @@ def _ensure_fhs_path_guard() -> None:
         print("    (reload your shell or run 'source ~/.bashrc' to pick it up)")
 
 def _ensure_acp_launcher() -> None:
-    """Self-heal the platform launchers exposed on PATH.
-
-    On Windows, restore missing ``hermes.exe`` / ``hermes-acp.exe`` copies in
-    the dedicated ``<install>\\bin`` directory.  Existing files are not
-    overwritten because ``bin\\hermes.exe`` may be the currently running
-    update launcher.
+    r"""Self-heal: install a ``hermes-acp`` launcher next to the ``hermes`` one.
 
     Mirrors the launcher block in ``scripts/install.sh`` so existing installs
     gain the ACP command on ``hermes update`` without a reinstall.  ACP hosts
@@ -3429,21 +3472,19 @@ def _ensure_acp_launcher() -> None:
     (venv wrapper, FHS symlink, pipx/pip console script) without having to
     reconstruct interpreter/entrypoint paths.
 
-    On POSIX, the ACP shim is skipped wherever a ``hermes-acp`` is already
-    present next to the ``hermes`` command.  Unwritable POSIX directories
-    (e.g. ``/usr/local/bin`` as non-root) are skipped silently.  Idempotent.
+    No-op on Windows (install.ps1 stages the ``hermes`` / ``hermes-acp``
+    launchers into the managed binary dir ``$HermesHome\bin`` and puts THAT
+    on the user PATH — never the whole ``venv\Scripts`` dir, which would
+    shadow the user's ``python`` (#83797); when those launchers go missing,
+    ``hermes_cli._install_repair.ensure_windows_bin_launchers`` re-stages
+    them) and wherever a ``hermes-acp`` is already present next to the
+    ``hermes`` command.  Unwritable directories (e.g. ``/usr/local/bin`` as
+    non-root) are skipped silently.  Idempotent.
     """
     if _m().sys.platform == "win32":
-        from hermes_cli._install_repair import _sync_windows_cli_launchers
-
-        try:
-            copied = _sync_windows_cli_launchers(Path(_m().PROJECT_ROOT))
-        except OSError as exc:
-            print(f"  ⚠ Could not restore Windows command launchers: {exc}")
-            return
-        if copied:
-            names = ", ".join(path.name for path in copied)
-            print(f"  ✓ Restored Windows command launcher(s): {names}")
+        # Windows launcher staging/repair lives in _install_repair
+        # (ensure_windows_bin_launchers at process start,
+        # migrate_windows_bin_path in this command's tail) — not here.
         return
     for bin_dir in (Path.home() / ".local" / "bin", Path("/usr/local/bin")):
         hermes_cmd = bin_dir / "hermes"
@@ -7042,12 +7083,32 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("FHS PATH guard check failed: %s", e)
 
-        # Self-heal the launchers exposed on PATH: the POSIX hermes-acp shim
-        # and missing copies in Windows' dedicated bin directory.
+        # Self-heal the hermes-acp launcher for installs that predate it, so
+        # ACP hosts (Zed, JetBrains, Buzz) can resolve Hermes on PATH without
+        # a reinstall.  No-op on Windows (the launcher migration below owns
+        # that) and when already present.
         try:
             _ensure_acp_launcher()
         except Exception as e:
             logger.debug("hermes-acp launcher self-heal failed: %s", e)
+
+        # Migrate the Windows hermes launchers to the managed binary dir
+        # (the default Hermes root's bin, next to the managed uv) and repair
+        # them if they are missing. Earlier layouts put them inside the git
+        # checkout (hermes-agent\bin) or put venv\Scripts itself on PATH; the
+        # in-checkout copies were swept by this command's own pre-update
+        # autostash (git stash push --include-untracked) and, with
+        # --keep-stash (the desktop updater), never restored — `hermes`
+        # stopped resolving in every new terminal. Updates never run
+        # install.ps1, so this tail call is how existing installs reach the
+        # new layout. No-op on POSIX and on source checkouts (root is not
+        # the managed clone under the default Hermes root).
+        try:
+            from hermes_cli._install_repair import migrate_windows_bin_path
+
+            migrate_windows_bin_path(_m().PROJECT_ROOT)
+        except Exception as e:
+            logger.debug("Windows bin launcher migration failed: %s", e)
 
         # Refresh the cua-driver binary used by the Computer Use toolset.
         # The upstream installer is gated on supported platforms and on the
@@ -7990,6 +8051,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # automation / operators do not treat the fleet as healthy.
             sys.exit(1)
 
+    except _shim_quarantine_error_type() as e:
+        # Fail-closed shim contention (#87331): strict quarantine refused
+        # BEFORE any installer ran — defer via marker, exit 2, no ZIP.
+        _refuse_update_for_contended_shims(e)
     except subprocess.CalledProcessError as e:
         stage = _format_update_failure_stage(e)
         if _should_zip_fallback_on_update_error(e):
