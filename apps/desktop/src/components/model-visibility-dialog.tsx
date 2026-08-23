@@ -53,6 +53,10 @@ export function ModelVisibilityDialog({
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId),
     queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway: gw, sessionId }),
+    // Same rationale as ModelPickerDialog: the catalog is user-facing and
+    // can change between opens; staleness-0 avoids showing a ≤60s-old list
+    // the moment the backend refreshed it.
+    staleTime: 0,
     enabled: open
   })
 

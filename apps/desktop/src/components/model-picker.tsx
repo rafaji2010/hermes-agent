@@ -63,6 +63,12 @@ export function ModelPickerDialog({
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId),
     queryFn: () => requestModelOptions({ gateway: gw, sessionId }),
+    // The catalog is user-facing and changes out from under us (model
+    // additions/removals, 1h backend cache expiry). The global 60s
+    // staleTime would let an open dialog keep a ≤60s-old list without a
+    // refetch; forcing staleness-0 here makes every dialog open pull the
+    // live catalog instead of reliving "the new model isn't there".
+    staleTime: 0,
     enabled: open
   })
 

@@ -505,6 +505,11 @@ const ChatViewContent = memo(function ChatViewContent({
   const modelOptionsQuery = useQuery<ModelOptionsResponse>({
     queryKey: modelOptionsQueryKey(activeGatewayProfile, activeSessionId),
     queryFn: () => requestModelOptions({ gateway: gateway || undefined, sessionId: activeSessionId }),
+    // The chat-side catalog (quick models + model menu) is user-facing and
+    // can change between renders (backend catalog refresh / model additions).
+    // The global 60s staleTime would keep a ≤60s-old list; staleness-0 means
+    // the menu reflects the live catalog.
+    staleTime: 0,
     enabled: gatewayOpen
   })
 
