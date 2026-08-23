@@ -132,8 +132,6 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("sakana/fugu-ultra",                      ""),
     # OpenRouter routers
     ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
-    ("stealth/ox-alpha",                       ""),
-    ("ox-alpha-free",                          "free"),
     # Free tier
     ("stealth/ox-alpha",                       "free"),  # "Ox Alpha" stealth reasoning model — 1M ctx
     ("openrouter/elephant-alpha",              "free"),
@@ -2079,7 +2077,10 @@ def fetch_openrouter_models(
         # Hide models that don't advertise tool-calling support — hermes-agent
         # requires it and surfacing them leads to immediate runtime failures
         # when the user selects them. Ported from Kilo-Org/kilocode#9068.
-        if not _openrouter_model_supports_tools(live_item):
+        # Exception: openrouter/pareto-code is a router that delegates to a
+        # tool-capable model (selected via openrouter.min_coding_score), so
+        # its own catalog entry lists no tools but it is still usable.
+        if preferred_id != "openrouter/pareto-code" and not _openrouter_model_supports_tools(live_item):
             continue
         if preferred_id == silent_default:
             # Keep the silent-default badge through the live refresh so the
