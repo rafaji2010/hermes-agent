@@ -5104,6 +5104,110 @@ class AIAgent:
         return False
 
     @staticmethod
+    def _is_opencode_ai_host(base_url: str) -> bool:
+        """True when *base_url* is hosted on opencode.ai (Zen / Go / free)."""
+        try:
+            from urllib.parse import urlparse
+
+            host = (urlparse(str(base_url or "")).netloc or "").lower()
+        except Exception:
+            return False
+        return host == "opencode.ai" or host.endswith(".opencode.ai")
+
+    @staticmethod
+    def _rewrite_opencode_model_first(request: Any) -> Any:
+        """Move the ``model`` key to the FIRST position in an outgoing JSON body.
+
+        opencode.ai's Zen/Go gateway parses the ``model`` field only when it
+        is the first key of the JSON payload — on both /v1/chat/completions and
+        /v1/responses. The OpenAI SDK (openai>=2.x) serializes request params
+        in its own field order, emitting ``messages``/``input`` before
+        ``model``, so every SDK request to opencode.ai arrives with an EMPTY
+        model and the gateway rejects it with HTTP 401 ``Model  is not
+        supported`` (note the double space — the name is gone). Verified live
+        against zen/go 2026-08-23: same body, key-order flipped, outcome
+        flips deterministically.
+
+        This rewrite is applied at the httpx transport seam (single choke
+        point for primary, request-scoped, streaming, and codex clients), so
+        the SDK never needs to know about the gateway's parser quirk. Only
+        opencode.ai-hosted POSTs with a JSON body carrying a non-empty string
+        ``model`` are touched; anything else passes through unchanged. Fails
+        open to the original request on any parse error.
+        """
+        import json as _json
+
+        try:
+            method = str(getattr(request, "method", "") or "").upper()
+            if method != "POST":
+                return request
+            url = str(getattr(request, "url", "") or "")
+            if not AIAgent._is_opencode_ai_host(
+                url
+            ):  # pragma: no cover - hostname helper covers netloc
+                return request
+            # Actually check host from the request URL directly (the helper
+            # above takes a base_url; request.url may include a path).
+            from urllib.parse import urlparse
+
+            host = (urlparse(url).netloc or "").lower()
+            if host != "opencode.ai" and not host.endswith(".opencode.ai"):
+                return request
+            ctype = str(request.headers.get("content-type", "") or "").lower()
+            if "json" not in ctype:
+                return request
+            payload = request.read()
+            if not payload:
+                return request
+            data = _json.loads(payload)
+            if not isinstance(data, dict):
+                return request
+            model = data.get("model")
+            if not isinstance(model, str) or not model.strip():
+                return request
+            # Already first — nothing to do.
+            if next(iter(data)) == "model":
+                return request
+            reordered = {"model": model}
+            reordered.update({k: v for k, v in data.items() if k != "model"})
+            new_body = _json.dumps(reordered, ensure_ascii=False).encode("utf-8")
+            headers = request.headers.copy()
+            headers["content-length"] = str(len(new_body))
+            # httpx.Request has no .copy(); build a fresh request with the
+            # rewritten body (and the same extensions, e.g. timeout hints).
+            import httpx as _httpx
+
+            return _httpx.Request(
+                method=request.method,
+                url=str(request.url),
+                headers=headers,
+                content=new_body,
+                extensions=request.extensions,
+            )
+        except Exception:
+            # Never block the request on a rewrite failure.
+            return request
+
+    @staticmethod
+    def _build_opencode_model_first_transport(*args: Any, **kwargs: Any) -> Any:
+        """httpx.HTTPTransport that rewrites opencode.ai POST bodies.
+
+        Used in place of the plain transport for opencode.ai hosts (Zen / Go /
+        free) so the gateway always receives ``model`` as the first JSON key.
+        Accepts the same args as ``httpx.HTTPTransport``, including the
+        ``proxy=`` kwarg (httpx 0.28 routes proxying through HTTPTransport
+        itself; Client._init_proxy_transport builds one with proxy=).
+        """
+
+        import httpx as _httpx
+
+        class _OpencodeModelFirstTransport(_httpx.HTTPTransport):
+            def handle_request(self, request):  # noqa: N802
+                return super().handle_request(AIAgent._rewrite_opencode_model_first(request))
+
+        return _OpencodeModelFirstTransport(*args, **kwargs)
+
+    @staticmethod
     def _build_keepalive_http_client(base_url: str = "", *, verify: Any = True) -> Any:
         """Build an httpx.Client with proactive idle-connection reaping.
 
@@ -5158,11 +5262,29 @@ class AIAgent:
             # vars and creating an HTTPProxy mount that would bypass our
             # NO_PROXY resolution.
             _mounts = {}
-            if _proxy is None:
+            if _proxy is None or AIAgent._is_opencode_ai_host(base_url):
+                # opencode.ai's gateway demands ``model`` as the FIRST JSON
+                # key; the OpenAI SDK always emits messages/input first.
+                # Use the rewriting transport so every SDK request (chat
+                # completions, responses, streaming, codex) lands with the
+                # model name in the position the gateway will actually read.
+                # This branch also covers the proxied case (keeping our
+                # mounts over httpx's auto-proxy transport) so the rewrite
+                # applies to proxied opencode.ai traffic too.
+                _opencode = AIAgent._is_opencode_ai_host(base_url)
                 _mounts = {
-                    "http://": _httpx.HTTPTransport(verify=verify),
-                    "https://": _httpx.HTTPTransport(verify=verify),
+                    "http://": AIAgent._build_opencode_model_first_transport(
+                        verify=verify, proxy=_proxy
+                    )
+                    if _opencode
+                    else _httpx.HTTPTransport(verify=verify),
+                    "https://": AIAgent._build_opencode_model_first_transport(
+                        verify=verify, proxy=_proxy
+                    )
+                    if _opencode
+                    else _httpx.HTTPTransport(verify=verify),
                 }
+                _proxy = None  # transports already carry the proxy
             return _httpx.Client(
                 limits=_limits,
                 timeout=_timeout,
