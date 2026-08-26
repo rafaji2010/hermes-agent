@@ -16,13 +16,13 @@ import os
 import socket
 import sys
 import time
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
 
 import agent.secret_scope as secret_scope
-from gateway.config import Platform, PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.platforms.base import (
     MessageEvent,
@@ -890,6 +890,7 @@ class TestSlackProxyBehavior:
                 # (so the User-Agent prefix sticks on ``self._app.client``).
                 # Fall back to building our own fake client when not provided.
                 self.client = client if client is not None else FakeWebClient(token)
+                self.kwargs = _kwargs
                 self.registered_events = []
                 self.registered_commands = []
                 self.registered_actions = []
@@ -959,6 +960,21 @@ class TestSlackProxyBehavior:
         assert adapter._handler is not None
         assert adapter._handler.proxy == "http://proxy.example.com:3128"
         assert adapter._handler.client.proxy == "http://proxy.example.com:3128"
+        # The resolved proxy must also reach the client bolt builds per inbound
+        # request: connect() hands the URL to the before_authorize middleware,
+        # which re-applies it once that client exists.
+        pin_proxy = created_apps[0].kwargs.get("before_authorize")
+        assert callable(pin_proxy)
+        per_request_client = SimpleNamespace(proxy="reloaded-from-env")
+        continued = False
+
+        async def _continue():
+            nonlocal continued
+            continued = True
+
+        await pin_proxy(client=per_request_client, next_=_continue)
+        assert per_request_client.proxy == "http://proxy.example.com:3128"
+        assert continued is True
         assert "hermes_feedback" in created_apps[0].registered_actions
         assert "hermes_clarify_other" in created_apps[0].registered_actions
         clarify_choice_patterns = [
@@ -974,6 +990,70 @@ class TestSlackProxyBehavior:
             pattern.fullmatch("hermes_clarify_choice")
             for pattern in clarify_choice_patterns
         )
+
+    @pytest.mark.asyncio
+    async def test_before_authorize_clears_env_proxy_per_request(self, monkeypatch):
+        """The client bolt builds per request must keep the proxy decision.
+
+        ``AsyncApp._init_context`` constructs a fresh ``AsyncWebClient`` for
+        every inbound request with ``proxy=app.client.proxy``, and slack_sdk
+        turns a ``None`` proxy *argument* back into ``HTTP(S)_PROXY`` — NO_PROXY
+        never enters that decision. Exercised against the real bolt objects so
+        the kwargs injection and the middleware ordering are the ones bolt
+        actually uses.
+        """
+        async_app_mod = pytest.importorskip("slack_bolt.async_app")
+        if getattr(async_app_mod, "AsyncApp", MagicMock) is MagicMock:
+            pytest.skip("real slack-bolt is not installed")
+        from slack_bolt.middleware.authorization.async_single_team_authorization import (
+            AsyncSingleTeamAuthorization,
+        )
+        from slack_bolt.request.async_request import AsyncBoltRequest
+        from slack_bolt.response import BoltResponse
+
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example.com:3128")
+        monkeypatch.setenv("NO_PROXY", "slack.com")
+
+        app_client = _slack_mod.AsyncWebClient(token="xoxb-fake")
+        _slack_mod._apply_slack_proxy(app_client, None)
+        app = async_app_mod.AsyncApp(
+            token="xoxb-fake",
+            client=app_client,
+            signing_secret="secret",
+            before_authorize=_slack_mod._slack_per_request_proxy_middleware(None),
+        )
+
+        request = AsyncBoltRequest(body={"type": "event_callback"}, mode="socket_mode")
+        app._init_context(request)
+        # The bug this guards: NO_PROXY covers the endpoint and the app client
+        # goes direct, yet the per-request client came back proxied.
+        assert request.context.client.proxy == "http://proxy.example.com:3128"
+
+        continued = False
+
+        async def _continue():
+            nonlocal continued
+            continued = True
+            return BoltResponse(status=200, body="")
+
+        await app._async_before_authorize.async_process(
+            req=request, resp=BoltResponse(status=200, body=""), next=_continue
+        )
+
+        assert continued is True
+        assert request.context.client.proxy is None
+        # base_url rides along from app.client, so the request-scoped client
+        # still talks to the same endpoint.
+        assert request.context.client.base_url == app_client.base_url
+        # ...and the pinning runs before the middleware that spends that client
+        # on auth.test.
+        middleware = app._async_middleware_list
+        authorization_index = next(
+            index
+            for index, item in enumerate(middleware)
+            if isinstance(item, AsyncSingleTeamAuthorization)
+        )
+        assert middleware.index(app._async_before_authorize) < authorization_index
 
 
 # ---------------------------------------------------------------------------
@@ -3650,15 +3730,11 @@ class TestProgressMessageThread:
         )
 
 
-class TestSlackReplyToText:
-    """Ensure MessageEvent.reply_to_text is populated on thread replies so
-    gateway.run can inject a ``[Replying to: "..."]`` prefix (parity with
-    Telegram/Discord/Feishu/WeCom)."""
+class TestSlackThreadParentContext:
+    """Ensure Slack thread roots are hydrated once, not injected every turn."""
 
     @pytest.mark.asyncio
-    async def test_slack_reply_to_text_set_on_thread_reply(self, adapter):
-        """When a thread reply arrives and the parent was posted by a bot
-        (e.g. cron summary), reply_to_text must carry the parent's text."""
+    async def test_thread_root_uses_channel_context_not_reply_to_text(self, adapter):
         adapter._channel_team = {}  # primary workspace only
         adapter._team_bot_user_ids = {}
 
@@ -3696,10 +3772,49 @@ class TestSlackReplyToText:
         ), "handle_message must be invoked for thread-reply DM"
         msg_event = adapter.handle_message.call_args[0][0]
         assert msg_event.reply_to_message_id == "1000.0"
-        # The critical assertion: parent text is exposed as reply_to_text so the
-        # gateway can inject it when not already in the session history.
-        assert msg_event.reply_to_text is not None
-        assert "メール要約" in msg_event.reply_to_text
+        assert "メール要約" in msg_event.channel_context
+        assert msg_event.reply_to_text is None
+
+    @pytest.mark.asyncio
+    async def test_active_thread_does_not_refetch_root_as_reply_text(self, adapter):
+        adapter._has_active_session_for_thread = MagicMock(return_value=True)
+        adapter._fetch_thread_parent_text = AsyncMock(return_value="original task")
+
+        event = {
+            "text": "one more detail",
+            "user": "U_USER",
+            "channel": "D123",
+            "channel_type": "im",
+            "ts": "1001.0",
+            "thread_ts": "1000.0",
+        }
+
+        with patch.object(
+            adapter, "_resolve_user_name", new=AsyncMock(return_value="Alice")
+        ):
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.channel_context is None
+        assert msg_event.reply_to_message_id == "1000.0"
+        assert msg_event.reply_to_text is None
+        adapter._fetch_thread_parent_text.assert_not_awaited()
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(enabled=True, token="fake")
+            }
+        )
+        runner.adapters = {}
+        prepared = await runner._prepare_inbound_message_text(
+            event=msg_event,
+            source=msg_event.source,
+            history=[{"role": "user", "content": "original task"}],
+        )
+
+        assert prepared == "one more detail"
+        assert "[Replying to:" not in prepared
 
 
 # ---------------------------------------------------------------------------
