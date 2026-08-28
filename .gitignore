@@ -214,3 +214,6 @@ native/fts5_cjk/*.so
 .lazy-refresh-incomplete
 # CommandCode CLI local state (taste profile, settings).
 .commandcode/
+apps/desktop/index-D7S8fLJT.js
+hermes_cli/web_dist.bak/
+index.html
