@@ -5,6 +5,7 @@ import type { ModelOptionProvider } from '@/types/hermes'
 import {
   collapseModelFamilies,
   defaultVisibleKeys,
+  DEFAULT_VISIBLE_PER_PROVIDER,
   effectiveVisibleKeys,
   emptyProviderSentinelKey,
   isProviderSentinel,
@@ -226,7 +227,7 @@ describe('resolveVisibleKeys', () => {
   })
 })
 
-describe('featured defaults', () => {
+describe('full-catalog defaults', () => {
   const featuredProvider = (slug: string, models: string[], featured_models: string[]): ModelOptionProvider => ({
     featured_models,
     models,
@@ -234,7 +235,7 @@ describe('featured defaults', () => {
     slug
   })
 
-  it('defaults to the featured shortlist when a provider publishes one', () => {
+  it('shows EVERY model even when a provider publishes a featured shortlist', () => {
     const nous = featuredProvider(
       'nous',
       ['anthropic/opus', 'anthropic/haiku', 'google/gemini', 'x-ai/grok'],
@@ -243,21 +244,25 @@ describe('featured defaults', () => {
 
     const visible = defaultVisibleKeys([nous])
 
-    // Featured are visible; the non-featured model is hidden by default.
+    // Fork behavior (2026-08-23): the backend's featured shortlist is
+    // advisory only — every curated model must be default-visible, nothing
+    // hidden behind search / Edit Models.
     expect(visible.has(modelVisibilityKey('nous', 'anthropic/opus'))).toBe(true)
     expect(visible.has(modelVisibilityKey('nous', 'google/gemini'))).toBe(true)
     expect(visible.has(modelVisibilityKey('nous', 'x-ai/grok'))).toBe(true)
-    expect(visible.has(modelVisibilityKey('nous', 'anthropic/haiku'))).toBe(false)
+    expect(visible.has(modelVisibilityKey('nous', 'anthropic/haiku'))).toBe(true)
   })
 
-  it('falls back to top-N when a provider ships no featured list', () => {
-    const plain = provider('ollama', ['qwen3:latest', 'llama3.2:latest'])
+  it('caps an oversized catalog at DEFAULT_VISIBLE_PER_PROVIDER', () => {
+    const big = featuredProvider(
+      'openrouter',
+      Array.from({ length: 60 }, (_, i) => `lab/model-${i}`),
+      []
+    )
 
-    const visible = defaultVisibleKeys([plain])
+    const visible = defaultVisibleKeys([big])
 
-    // No featured_models → every model stays a default (top-N, N ≫ 2 here).
-    expect(visible.has(modelVisibilityKey('ollama', 'qwen3:latest'))).toBe(true)
-    expect(visible.has(modelVisibilityKey('ollama', 'llama3.2:latest'))).toBe(true)
+    expect(visible.size).toBe(DEFAULT_VISIBLE_PER_PROVIDER)
   })
 
   it('ignores an empty featured list and falls back to top-N', () => {
@@ -265,6 +270,7 @@ describe('featured defaults', () => {
 
     const visible = defaultVisibleKeys([plain])
 
+    // No featured_models → every model stays a default (top-N, N ≫ 2 here).
     expect(visible.has(modelVisibilityKey('ollama', 'qwen3:latest'))).toBe(true)
     expect(visible.has(modelVisibilityKey('ollama', 'llama3.2:latest'))).toBe(true)
   })

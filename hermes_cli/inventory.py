@@ -254,6 +254,10 @@ def build_models_payload(
                 # gutted in the picker. (#47077)
                 if not _is_routing_aggregator(slug):
                     continue
+                # First-party aggregators (OpenRouter / Nous) keep their FULL
+                # curated catalogs; see _FIRST_PARTY_AGGREGATOR_SLUGS.
+                if slug in _FIRST_PARTY_AGGREGATOR_SLUGS:
+                    continue
                 original = row.get("models") or []
                 filtered = [m for m in original if m.lower() not in user_models]
                 if len(filtered) < len(original):
@@ -501,6 +505,18 @@ def _apply_capabilities(rows: list[dict]) -> None:
 # behind search / show-all. 5 keeps a lab's current headliners without letting a
 # prolific vendor (OpenAI's gpt-5.6-* family) flood the default view.
 _FEATURED_PER_LAB = 5
+
+
+# Canonical first-party aggregators whose curated catalogs must NEVER be
+# gutted by the user-model overlap dedup below. They are first-class
+# providers with their own credentials/pricing; the picker groups rows by
+# provider, so an identical model under a user-configured row (commandcode,
+# a proxy) is a CHOICE, not a reroute hazard. The #45954 dedup therefore
+# applies only to secondary routing rows (custom:* proxies), never to
+# OpenRouter / Nous themselves. (Fork divergence 2026-08-23: user mandate —
+# the OpenRouter row must show its full curated catalog even when the same
+# models exist in another configured row.)
+_FIRST_PARTY_AGGREGATOR_SLUGS: frozenset[str] = frozenset({"openrouter", "nous"})
 
 
 def _apply_featured(rows: list[dict]) -> None:

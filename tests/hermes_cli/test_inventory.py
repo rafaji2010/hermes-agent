@@ -497,10 +497,17 @@ def test_user_defined_rows_carry_alias_set_for_gui_current_match():
     assert "aliases" not in by_slug["nous"]
 
 
-def test_aggregator_dedup_removes_overlapping_models():
-    """Models served by a user-defined provider are removed from
-    aggregator rows so the picker doesn't show them under the wrong
-    provider.  (#45954)"""
+def test_first_party_aggregator_keeps_catalog_overlapping_user_provider():
+    """OpenRouter (first-party aggregator) rows keep their FULL curated
+    catalog even when a user-defined provider serves same-named models.
+
+    OpenRouter / Nous are first-class providers with their own credentials
+    and pricing; the picker groups rows by provider, so the same model under
+    both rows is a choice, not a reroute hazard. The #45954 overlap dedup
+    therefore applies only to secondary routing rows (custom:* proxies).
+    (Fork divergence 2026-08-23: user mandate — the OpenRouter row must show
+    all its curated models even when they also exist in another configured
+    row, e.g. commandcode.)"""
     rows = [
         _user_provider_row("litellm-proxy", [
             "nvidia/nim/minimax-m3",
@@ -522,11 +529,13 @@ def test_aggregator_dedup_removes_overlapping_models():
     # User-defined provider keeps all its models
     assert proxy_row["models"] == ["nvidia/nim/minimax-m3", "nvidia/nim/kimi-k2.6"]
 
-    # Aggregator lost the overlapping model but kept the rest
-    assert "nvidia/nim/minimax-m3" not in or_row["models"]
-    assert "minimax/minimax-m3" in or_row["models"]
-    assert "anthropic/claude-sonnet-4.6" in or_row["models"]
-    assert or_row["total_models"] == 2
+    # First-party aggregator keeps EVERYTHING — nothing stripped.
+    assert or_row["models"] == [
+        "minimax/minimax-m3",
+        "nvidia/nim/minimax-m3",
+        "anthropic/claude-sonnet-4.6",
+    ]
+    assert or_row["total_models"] == 3
 
 
 
@@ -566,8 +575,12 @@ def test_flat_namespace_reseller_keeps_first_party_models_overlapping_user_proxy
     ]
     assert go_row["total_models"] == 6
 
-    # A TRUE routing aggregator is still deduped against the user's models.
-    assert "minimax-m3" not in or_row["models"]
+    # First-party aggregators (OpenRouter) are ALSO exempt: a same-named
+    # model under a user-defined row is a choice between providers, not a
+    # reroute hazard, so the curated catalog stays intact. (Fork
+    # divergence 2026-08-23 — #45954's strip now applies only to secondary
+    # routing rows, never to OpenRouter / Nous.)
+    assert "minimax-m3" in or_row["models"]
     assert "anthropic/claude-sonnet-4.6" in or_row["models"]
 
 

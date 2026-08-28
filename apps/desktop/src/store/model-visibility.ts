@@ -3,7 +3,8 @@ import { atom } from 'nanostores'
 import { persistString, storedString } from '@/lib/storage'
 import type { ModelOptionProvider } from '@/types/hermes'
 
-const STORAGE_KEY = 'hermes.desktop.visible-models'
+const STORAGE_KEY = 'hermes.desktop.visible-models.v2'
+const LEGACY_STORAGE_KEY = 'hermes.desktop.visible-models'
 
 /** Models shown per provider in the status-bar dropdown before the user has
  *  customized the list. Backend `models` are already relevance-ordered. */
@@ -71,17 +72,29 @@ export function collapseModelFamilies(models: readonly string[]): ModelFamily[] 
 function loadVisible(): Set<string> | null {
   const raw = storedString(STORAGE_KEY)
 
-  if (!raw) {
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) ? new Set(parsed.filter((x): x is string => typeof x === 'string')) : null
+    } catch {
+      return null
+    }
+  }
+
+  // One-time migration from v1. The v1 allowlist is stale: it was persisted
+  // when the visible set happened to hold 32 openrouter models (the backend
+  // row had since been gutted to 32 by the #45954 overlap dedup), so keeping
+  // it would hide every new/model-restored curated model (pareto-code,
+  // ox-alpha, etc.) behind the old allowlist. Drop it and fall back to the
+  // fresh full-catalog defaults so the user's next Edit Models starts from
+  // the current catalog.
+  const legacyRaw = storedString(LEGACY_STORAGE_KEY)
+  if (legacyRaw) {
+    persistString(LEGACY_STORAGE_KEY, null)
     return null
   }
 
-  try {
-    const parsed = JSON.parse(raw)
-
-    return Array.isArray(parsed) ? new Set(parsed.filter((x): x is string => typeof x === 'string')) : null
-  } catch {
-    return null
-  }
+  return null
 }
 
 /** Explicit set of visible `provider::model` keys, or null when the user
@@ -99,8 +112,12 @@ export function setModelVisibilityOpen(open: boolean): void {
   $modelVisibilityOpen.set(open)
 }
 
-/** The default-visible key set: the curated top-N per provider. Used both as
- *  the dropdown fallback and to seed the Edit Models dialog. */
+/** The default-visible key set: the full catalog per provider (up to
+ *  DEFAULT_VISIBLE_PER_PROVIDER). Used both as the dropdown fallback and to
+ *  seed the Edit Models dialog. Fork behavior 2026-08-23: the backend's
+ *  featured_models shortlist is NOT used as the default — every curated
+ *  model the provider row ships must be visible without search / Edit
+ *  Models (user mandate: "show me all the openrouter models"). */
 export function defaultVisibleKeys(providers: readonly ModelOptionProvider[]): Set<string> {
   const keys = new Set<string>()
 
@@ -111,20 +128,15 @@ export function defaultVisibleKeys(providers: readonly ModelOptionProvider[]): S
   return keys
 }
 
-/** Add a provider's curated default model keys to `target`. Prefers the
- *  backend's `featured_models` shortlist (one flagship per lab) for aggregator
- *  providers that would otherwise flood the default view with dozens of models;
- *  falls back to the top-N collapsed families when a provider ships no featured
- *  list. Shared by `defaultVisibleKeys` and `resolveVisibleKeys` so the
- *  expansion rule lives in exactly one place. */
+/** Add a provider's default model keys to `target`: the full catalog (top-N
+ *  by the backend's curated order) for EVERY provider. The backend's
+ *  `featured_models` shortlist is advisory only and is deliberately not
+ *  applied — a newest-per-lab cut would hide older curated models from the
+ *  default view. Shared by `defaultVisibleKeys` and `resolveVisibleKeys` so
+ *  the expansion rule lives in exactly one place. */
 function expandProviderDefaults(provider: ModelOptionProvider, target: Set<string>): void {
   const families = collapseModelFamilies(provider.models ?? [])
-
-  const featured = provider.featured_models ?? []
-
-  const defaults = featured.length
-    ? families.filter(family => featured.includes(family.id))
-    : families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)
+  const defaults = families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)
 
   for (const family of defaults) {
     target.add(modelVisibilityKey(provider.slug, family.id))

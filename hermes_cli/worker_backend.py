@@ -184,6 +184,12 @@ class SubprocessBackend(AgentExecutionBackend):
 
     _POLL_INTERVAL = 0.2
 
+    #: Extra seconds a worker may take to produce its FIRST output beyond the
+    #: spec deadline (harness cold start: node resolution, auth refresh,
+    #: model download). Once the harness acknowledges (any output), the work
+    #: clock restarts at full ``request.timeout`` — see ``_update_status``.
+    COLD_START_GRACE_S = 120
+
     def __init__(self, worker_type: str | None = None):
         self.worker_type = worker_type or self.worker_type
         self._processes: dict[str, subprocess.Popen] = {}
@@ -191,6 +197,8 @@ class SubprocessBackend(AgentExecutionBackend):
         self._output_buffers: dict[str, list[bytes]] = {}
         self._read_positions: dict[str, int] = {}
         self._deadlines: dict[str, float] = {}
+        self._timeouts: dict[str, float] = {}
+        self._acked: set[str] = set()
 
     # -- command building ----------------------------------------------------
 
@@ -215,7 +223,13 @@ class SubprocessBackend(AgentExecutionBackend):
         self._output_buffers[execution_id] = []
         self._read_positions[execution_id] = 0
         if request.timeout:
-            self._deadlines[execution_id] = now + request.timeout
+            self._timeouts[execution_id] = request.timeout
+            # Deadline starts at timeout + cold-start grace; once the harness
+            # produces its first output ("acks"), the deadline is re-anchored
+            # at now + timeout (see _update_status).
+            self._deadlines[execution_id] = (
+                now + request.timeout + self.COLD_START_GRACE_S
+            )
 
         self._transition(execution_id, DISPATCHING)
         if command is None:
@@ -367,6 +381,14 @@ class SubprocessBackend(AgentExecutionBackend):
             self._cleanup(execution_id)
             return
         self._drain(execution_id)
+        # First output = the harness acknowledged the dispatch. Re-anchor the
+        # deadline at now + full timeout so slow cold starts (node resolution,
+        # auth refresh) don't eat the real work budget.
+        if execution_id not in self._acked and self._all_output(execution_id).strip():
+            self._acked.add(execution_id)
+            timeout = self._timeouts.get(execution_id)
+            if timeout:
+                self._deadlines[execution_id] = time.time() + timeout
         deadline = self._deadlines.get(execution_id)
         if deadline is not None and time.time() > deadline:
             self._kill(execution_id)
@@ -918,11 +940,13 @@ class PiBackend(SubprocessBackend):
 
     def _build_command(self, request: WorkerSpec) -> list[str]:
         # Per-harness model pin via worker_models.json → config.yaml
-        model, _ = _worker_config("pi", request.constraints, None)
+        model, provider = _worker_config("pi", request.constraints, None)
         command = ["pi"]
         flag = detect_pi_flag()
         if flag:
             command.append(flag)
+        if provider:
+            command += ["--provider", provider]
         # Only pass --model if pi advertises it; otherwise skip (documented fallback)
         if model and _pi_supports_model():
             command += ["--model", model]
@@ -989,10 +1013,11 @@ class OpencodeBackend(SubprocessBackend):
     worker_type = "opencode"
 
     def _build_command(self, request: WorkerSpec) -> list[str]:
-        model, _ = _worker_config("opencode", request.constraints, None)
+        model, provider = _worker_config("opencode", request.constraints, None)
         command = ["opencode", "run", "--auto"]
         if model:
-            command += ["--model", model]
+            model_arg = f"{provider}/{model}" if provider and "/" not in model else model
+            command += ["--model", model_arg]
         if request.workspace:
             command += ["--dir", request.workspace]
         command.append(request.task)
@@ -1771,6 +1796,30 @@ def _format_status(worker_type: str, status: dict) -> str:
     return line
 
 
+#: When the opencode-go gateway is browning out, retry the opencode lane on
+#: this model instead of failing outright (verified reachable during the
+#: 2026-08-23 muse-spark outage). Empty string disables the fallback.
+OPENCODE_FALLBACK_MODEL = "opencode-go/deepseek-v4-flash"
+
+#: Error fragments that indicate an upstream gateway brownout (server-side),
+#: not a task failure — these qualify for the fallback-model retry.
+_GATEWAY_BROWNOUT_FRAGMENTS = (
+    "UnknownError",
+    "server_error",
+    "503",
+    "502",
+    "empty response",
+)
+
+
+def _is_gateway_brownout(error: str | None) -> bool:
+    """True when ``error`` looks like an upstream gateway outage."""
+    if not error:
+        return False
+    lowered = error.lower()
+    return any(frag.lower() in lowered for frag in _GATEWAY_BROWNOUT_FRAGMENTS)
+
+
 def run_workers_cli_command(args) -> int:
     """``hermes workers run <task>`` — route, start, and (optionally) wait.
 
@@ -1870,6 +1919,26 @@ def run_workers_cli_command(args) -> int:
                 print(f"[retry {attempt}/{attempts}] switched to worker '{worker_type}'")
             else:
                 print(f"[retry {attempt}/{attempts}]")
+
+        # Gateway-brownout fallback (§29): when opencode's upstream gateway
+        # is erroring server-side (previous attempt failed with UnknownError/
+        # 5xx), retry on the fallback model instead of failing outright —
+        # the task itself was never attempted. Skipped when the caller pinned
+        # an explicit --model.
+        if (
+            worker_type == "opencode"
+            and attempt > 1
+            and OPENCODE_FALLBACK_MODEL
+            and _last_opencode_brownout
+            and not constraints.get("model")
+        ):
+            provider_name, model_name = OPENCODE_FALLBACK_MODEL.split("/", 1)
+            constraints["model"] = model_name
+            constraints["provider"] = provider_name
+            print(
+                f"[fallback] gateway brownout detected — retrying opencode "
+                f"on {OPENCODE_FALLBACK_MODEL}"
+            )
 
         spec = WorkerSpec(
             worker_type=worker_type,

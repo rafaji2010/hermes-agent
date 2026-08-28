@@ -460,9 +460,42 @@ if (REMOTE_DISPLAY_REASON) {
   // Belt-and-suspenders for X11/VNC, where the Viz compositor can still glitch
   // with only --disable-gpu: force compositing onto the CPU too.
   app.commandLine.appendSwitch('disable-gpu-compositing')
+  // Linux Intel UHD 630 + kernel 7.0 hits zygote_communication + gpu_data_manager FATAL
+  // even with disableHardwareAcceleration alone. Add the full software fallback
+  // that `Hermes --disable-gpu --no-sandbox` testing proved stable.
+  app.commandLine.appendSwitch('disable-gpu')
+  app.commandLine.appendSwitch('disable-gpu-sandbox')
+  // Keep GPU work in-process so a sandboxed gpuProcessHost launch failure
+  // cannot escalate to the FATAL "GPU process isn't usable. Goodbye."
+  // Seen repeatedly on this host (CoffeeLake-H GT2 + 7.0.0-30-generic).
+  if (!app.commandLine.hasSwitch('in-process-gpu')) {
+    app.commandLine.appendSwitch('in-process-gpu')
+  }
   console.log(
     `[hermes] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
   )
+} else if (process.platform === 'linux' && !IS_WSL) {
+  // Local Linux fallback — same FATAL hits even without remote display.
+  // CoffeeLake-H GT2 [UHD 630] + 7.0.0-30-generic crashes the sandboxed
+  // gpuProcessHost (zygote_communication + gpu_data_manager) even when
+  // DISPLAY=:1 (local X11). The remote-display detector correctly returns
+  // null for :1, but the crash is not remote-specific — it's a GPU stack
+  // bug. Force software rendering on Linux by default; respect an explicit
+  // HERMES_DESKTOP_DISABLE_GPU=0/false/no/off that means "keep GPU on".
+  const override = String(process.env.HERMES_DESKTOP_DISABLE_GPU || '')
+    .trim()
+    .toLowerCase()
+  const keepGpuOn = new Set(['0', 'false', 'no', 'off']).has(override)
+  if (!keepGpuOn) {
+    app.disableHardwareAcceleration()
+    app.commandLine.appendSwitch('disable-gpu-compositing')
+    app.commandLine.appendSwitch('disable-gpu')
+    app.commandLine.appendSwitch('disable-gpu-sandbox')
+    if (!app.commandLine.hasSwitch('in-process-gpu')) {
+      app.commandLine.appendSwitch('in-process-gpu')
+    }
+    console.log('[hermes] Linux GPU software fallback enabled (local display) to avoid GPU process crash')
+  }
 }
 
 // Renderer debugging port. On for dev-server runs (`hgui` / `npm run dev`) so
