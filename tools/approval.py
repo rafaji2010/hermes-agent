@@ -5008,6 +5008,10 @@ def check_all_command_guards(command: str, env_type: str,
         # from a broken local model. A True verdict blocks locally with no
         # cloud call; a False verdict still falls through to the smart LLM
         # (the deterministic floors above remain the unconditional safety net).
+        # With approvals.shieldstral.escalate=true, a True verdict skips the
+        # cloud LLM and forces the owner prompt instead of a hard block —
+        # mirroring the risk-tier escalate semantics (M13.1).
+        shieldstral_escalated = False
         try:
             from tools.shieldstral_guard import shieldstral_verdict
             shieldstral = shieldstral_verdict(command)
@@ -5015,10 +5019,24 @@ def check_all_command_guards(command: str, env_type: str,
             logger.warning("Shieldstral guard unavailable (%s) — pass through", exc)
             shieldstral = None
         if shieldstral is True:
-            logger.warning("Shieldstral local guard blocked command: %s", command[:200])
-            return {"approved": False,
-                    "message": "Blocked by the local Shieldstral safety guard.",
-                    "shieldstral": True}
+            shieldstral_cfg = {}
+            try:
+                from tools.shieldstral_guard import _get_shieldstral_config
+                shieldstral_cfg = _get_shieldstral_config()
+            except Exception:  # pragma: no cover - fail open on config errors
+                shieldstral_cfg = {}
+            if shieldstral_cfg.get("escalate"):
+                logger.warning(
+                    "Shieldstral flagged command; escalating for owner review: %s",
+                    command[:200],
+                )
+                shieldstral_escalated = True
+                approval_mode = "default"
+            else:
+                logger.warning("Shieldstral local guard blocked command: %s", command[:200])
+                return {"approved": False,
+                        "message": "Blocked by the local Shieldstral safety guard.",
+                        "shieldstral": True}
 
         observer_payload = _prepare_smart_approval_observer(
             command=command,
@@ -5027,7 +5045,7 @@ def check_all_command_guards(command: str, env_type: str,
             pattern_keys=[key for key, _, _ in warnings],
             session_key=session_key,
         )
-        verdict = _smart_approve(command, combined_desc_for_llm)
+        verdict = "escalate" if shieldstral_escalated else _smart_approve(command, combined_desc_for_llm)
         _observe_smart_approval_verdict(observer_payload, verdict)
         if verdict == "approve":
             # Approve this command only. Pattern-level persistence would let one

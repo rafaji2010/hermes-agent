@@ -2536,6 +2536,10 @@ DEFAULT_CONFIG = {
             "ollama_url": "http://127.0.0.1:11434",
             "gguf_path": "~/.hermes/models/Shieldstral-1.0-3B-Q4_K_M.gguf",
             "timeout": 5,
+            # escalate: True => a Shieldstral "yes" verdict prompts the owner
+            # (Phase 3 interactive approval) instead of hard-blocking —
+            # mirroring the risk-tier escalate semantics (M13.1).
+            "escalate": False,
         },
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates
