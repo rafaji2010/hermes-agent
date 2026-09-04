@@ -64,7 +64,8 @@ def _add_project(home: Path, name: str, folders) -> str:
     """Create a real project in the home's projects.db; return its id."""
     with projects_db.connect_closing(home / "projects.db") as conn:
         pid = projects_db.create_project(
-            conn, name=name, folders=folders, primary_path=folders[0]
+            conn, name=name, folders=folders, primary_path=folders[0],
+            allow_duplicate_path=True,
         )
     return pid
 

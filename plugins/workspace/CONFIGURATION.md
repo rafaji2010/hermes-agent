@@ -1,8 +1,8 @@
 # Workspace Plugin — Required Configuration
 
 This file documents the **single configuration change** needed to activate
-the Workspace Python backend plugin.  No core files were modified to
-implement this plugin.
+the Workspace Python backend plugin. The Python backend itself is additive
+under plugins/workspace and requires no core edits to load.
 
 ---
 
@@ -64,22 +64,21 @@ so it has no practical effect.
 
 ---
 
-## No Core Files Modified
+## Core Delta (intentional, beyond the M0 plugin)
 
-The following Hermes core files were **not modified** in any way:
+The M0 plugin loaded with no core edits. Later milestones intentionally
+extend core at the edges, per AGENTS.md narrow-waist discipline:
 
-- `electron/main.ts`
-- `electron/preload.ts`
-- `src/app/` (any file)
-- `src/components/` (any file)
-- `src/store/` (any file)
-- `src/contrib/` (any file)
-- `hermes_cli/plugins.py`
-- `hermes_cli/web_server.py`
+- tools/approval.py: deterministic risk-tier overlay plus Shieldstral local
+  guard, both evaluated before the cloud smart-approval LLM.
+- tools/file_tools.py plus tools/file_operations.py: M8.2 read-layer gap
+  fixes and device-write guards.
+- tools/shieldstral_guard.py plus tools/flux3_video_tool.py: new edge tools.
+- web/src plus hermes_cli/web_server.py: Fleet, Artifacts, Usage surfaces.
+- apps/desktop plus agent prompt wiring: model pickers, workspace pane,
+  context hooks.
 
-All changes are confined to the plugin directories:
-- `plugins/workspace/` (Python backend plugin)
-- `apps/desktop/src/plugins/workspace/` (desktop renderer plugin)
-
-Both are standard plugin installation locations that the existing
-discovery mechanisms already scan.
+The Python backend under plugins/workspace plus the desktop renderer under
+apps/desktop/src/plugins/workspace remain the only plugin-owned trees.
+Core edits above are reviewed as edge hardening, never a second hook,
+memory, or instruction system.

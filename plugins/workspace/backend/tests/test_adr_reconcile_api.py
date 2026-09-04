@@ -94,7 +94,8 @@ def _link_project(c, ws_id: str, git_root: Path) -> None:
 
     with projects_db.connect_closing(_ACTIVE_HOME / "projects.db") as conn:
         pid = projects_db.create_project(
-            conn, name="recon-proj", folders=[str(git_root)]
+            conn, name="recon-proj", folders=[str(git_root)],
+            allow_duplicate_path=True,
         )
     resp = c.put(f"/v1/workspaces/{ws_id}/project", json={"project_id": pid})
     assert resp.status_code == 200, resp.text

@@ -1,17 +1,13 @@
 """S7.5.3 — Workspace memory promotion ledger service.
 
-A focused service abstraction over the metadata-only promotion ledger.
-Persistence stays in ``SQLiteStorage``; this service owns:
+Ledger phase is metadata-only: lifecycle/status transitions, scope/profile
+isolation, deterministic dedup, and audit of mutations without storing
+claim, transcript, or secret content.
 
-* lifecycle/status transitions (deterministic, no invented states)
-* scope/profile isolation (workspace-scoped access, no global fallback)
-* deterministic dedup (repeated equivalent candidate → existing record)
-* audit of lifecycle mutations (metadata only — never claim/transcript/
-  secret content)
-
-This milestone does NOT perform promotion: no Hermes MemoryStore writes,
-no provider calls, no automatic extraction.  It only records WHAT happened
-to a candidate and WHY.
+Execution phase lives in this same module below: execute() invokes the
+Hermes memory_tool dispatcher, the ONLY write path to MEMORY.md and USER.md.
+See execute() plus _parse_memory_tool_result(). The ledger-only note above
+covers candidate recording only, not execution.
 """
 
 from __future__ import annotations

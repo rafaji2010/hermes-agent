@@ -16,9 +16,9 @@ Master document for the Hermes AI Agent project — architecture, milestones, co
 
 ## Current Repository
 
-- **Path:** `~/Documents/AIProjects/HermesPlatform/repos/hermes-agent`
+- **Path:** `~/Documents/AIProjects/HermesPlatform/repos/hermes-agent-upstream-integration`
 - **Workspace Plugin:** `plugins/workspace/`
-- **Branch:** `workspace-plugin`
+- **Branch:** `workspace-integration`
 
 ---
 

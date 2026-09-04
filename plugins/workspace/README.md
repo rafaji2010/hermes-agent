@@ -33,7 +33,7 @@ plugins/workspace/
 │   │   └── search_service.py    # Global search
 │   ├── api/
 │   │   └── v1.py                # v1 REST endpoints
-│   ├── migrations/              # SQL migrations (001-007)
+│   ├── migrations/              # SQL migrations (001-008)
 │   ├── security/
 │   │   ├── exceptions.py        # Security exception hierarchy
 │   │   ├── models.py            # ContentLabel, CapabilityDef, AuditEvent
@@ -47,7 +47,7 @@ plugins/workspace/
 │   │   ├── network_isolation.py # URL validation, SSRF prevention (ADR-SEC-007 L5)
 │   │   ├── resource_limits.py   # Resource limit enforcement (ADR-SEC-007 L6)
 │   │   └── sandbox.py           # Path sandbox, workspace isolation (ADR-SEC-007 L1-2)
-│   └── tests/                   # 389 pytest tests
+│   └── tests/                   # 818 pytest tests (2026-09-04)
 ```
 
 ## Security Architecture
