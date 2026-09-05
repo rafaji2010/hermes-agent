@@ -10,21 +10,27 @@ import pytest
 
 from hermes_constants import get_hermes_home
 
+# Post-decomposition the fleet-models fetch state lives in
+# hermes_cli.web_routers.fleet. Reads via ``ws.<name>`` resolve through the
+# web_server lazy seam to the same objects; REBINDS must target the owner
+# module directly (module-level rebinding cannot be forwarded).
+from hermes_cli.web_routers import fleet as _fleet_owner
+
 
 @pytest.fixture(autouse=True)
 def _reset_fleet_models_cache():
     import hermes_cli.web_server as ws
     ws._FLEET_MODELS_CACHE.clear()
-    ws._FLEET_MODELS_AT = None
-    ws._FLEET_MODELS_TASK = None
+    _fleet_owner._FLEET_MODELS_AT = None
+    _fleet_owner._FLEET_MODELS_TASK = None
     # also reset events store
     ws._fleet_events.clear()
     ws._fleet_seen.clear()
     ws._fleet_next_seq = 1
     yield
     ws._FLEET_MODELS_CACHE.clear()
-    ws._FLEET_MODELS_AT = None
-    ws._FLEET_MODELS_TASK = None
+    _fleet_owner._FLEET_MODELS_AT = None
+    _fleet_owner._FLEET_MODELS_TASK = None
 
 
 @pytest.fixture()
@@ -217,7 +223,7 @@ class TestFleetModelsCatalog:
         r1 = _web_client.get("/api/fleet/models")
         assert r1.status_code == 200
         # Expire TTL
-        ws._FLEET_MODELS_AT = time.time() - 4000
+        _fleet_owner._FLEET_MODELS_AT = time.time() - 4000
         # Now fail only openrouter
         mapping_partial = {
             "https://opencode.ai/zen/go/v1/models": {"data": [{"id": "new-ok"}]},
@@ -239,12 +245,12 @@ class TestFleetModelsPersistence:
         import urllib.request, stat as _stat
         # prime catalog so validation passes
         import hermes_cli.web_server as ws
-        ws._FLEET_MODELS_CACHE = {
+        _fleet_owner._FLEET_MODELS_CACHE = {
             "opencode-go": {"models": ["m1", "m2"]},
             "commandcode": {"models": ["c1"]},
             "openrouter": {"models": ["anthropic/claude-3.7-sonnet"]},
         }
-        ws._FLEET_MODELS_AT = time.time()
+        _fleet_owner._FLEET_MODELS_AT = time.time()
         resp = _web_client.post("/api/fleet/models/opencode", json={"provider": "opencode-go", "model": "m1"})
         assert resp.status_code == 200
         body = resp.json()
@@ -264,29 +270,29 @@ class TestFleetModelsPersistence:
 
     def test_unknown_worker_404(self, _web_client, monkeypatch):
         import hermes_cli.web_server as ws
-        ws._FLEET_MODELS_CACHE = {"opencode-go": {"models": ["m1"]}, "commandcode": {"models": []}, "openrouter": {"models": []}}
-        ws._FLEET_MODELS_AT = time.time()
+        _fleet_owner._FLEET_MODELS_CACHE = {"opencode-go": {"models": ["m1"]}, "commandcode": {"models": []}, "openrouter": {"models": []}}
+        _fleet_owner._FLEET_MODELS_AT = time.time()
         resp = _web_client.post("/api/fleet/models/notaworker", json={"provider": "opencode-go", "model": "m1"})
         assert resp.status_code == 404
 
     def test_unknown_model_400_only_when_catalog_populated(self, _web_client, monkeypatch):
         import hermes_cli.web_server as ws
         # catalog populated for opencode-go
-        ws._FLEET_MODELS_CACHE = {"opencode-go": {"models": ["known"]}, "commandcode": {"models": []}, "openrouter": {"models": []}}
-        ws._FLEET_MODELS_AT = time.time()
+        _fleet_owner._FLEET_MODELS_CACHE = {"opencode-go": {"models": ["known"]}, "commandcode": {"models": []}, "openrouter": {"models": []}}
+        _fleet_owner._FLEET_MODELS_AT = time.time()
         resp = _web_client.post("/api/fleet/models/opencode", json={"provider": "opencode-go", "model": "unknown-xyz"})
         assert resp.status_code == 400
         # When catalog empty for that provider, allow unknown
-        ws._FLEET_MODELS_CACHE = {"opencode-go": {"models": []}, "commandcode": {"models": []}, "openrouter": {"models": []}}
-        ws._FLEET_MODELS_AT = time.time()
+        _fleet_owner._FLEET_MODELS_CACHE = {"opencode-go": {"models": []}, "commandcode": {"models": []}, "openrouter": {"models": []}}
+        _fleet_owner._FLEET_MODELS_AT = time.time()
         resp2 = _web_client.post("/api/fleet/models/opencode", json={"provider": "openrouter", "model": "any-model-123"})
         # openrouter catalog empty → allowed
         assert resp2.status_code == 200
 
     def test_get_worker_returns_current(self, _web_client, monkeypatch):
         import hermes_cli.web_server as ws
-        ws._FLEET_MODELS_CACHE = {"opencode-go": {"models": ["m1"]}, "commandcode": {"models": []}, "openrouter": {"models": []}}
-        ws._FLEET_MODELS_AT = time.time()
+        _fleet_owner._FLEET_MODELS_CACHE = {"opencode-go": {"models": ["m1"]}, "commandcode": {"models": []}, "openrouter": {"models": []}}
+        _fleet_owner._FLEET_MODELS_AT = time.time()
         _web_client.post("/api/fleet/models/opencode", json={"provider": "opencode-go", "model": "m1"})
         r = _web_client.get("/api/fleet/models/opencode")
         assert r.status_code == 200
@@ -311,8 +317,8 @@ class TestFleetModelsPersistence:
         assert r.json()["provider"] == ""
         # POST should repair file
         import hermes_cli.web_server as ws
-        ws._FLEET_MODELS_CACHE = {"opencode-go": {"models": ["m1"]}, "commandcode": {"models": []}, "openrouter": {"models": []}}
-        ws._FLEET_MODELS_AT = time.time()
+        _fleet_owner._FLEET_MODELS_CACHE = {"opencode-go": {"models": ["m1"]}, "commandcode": {"models": []}, "openrouter": {"models": []}}
+        _fleet_owner._FLEET_MODELS_AT = time.time()
         resp = _web_client.post("/api/fleet/models/opencode", json={"provider": "opencode-go", "model": "m1"})
         assert resp.status_code == 200
         assert p.is_file()
@@ -321,8 +327,8 @@ class TestFleetModelsPersistence:
 
     def test_delete_clears(self, _web_client, monkeypatch):
         import hermes_cli.web_server as ws
-        ws._FLEET_MODELS_CACHE = {"opencode-go": {"models": ["m1"]}, "commandcode": {"models": []}, "openrouter": {"models": []}}
-        ws._FLEET_MODELS_AT = time.time()
+        _fleet_owner._FLEET_MODELS_CACHE = {"opencode-go": {"models": ["m1"]}, "commandcode": {"models": []}, "openrouter": {"models": []}}
+        _fleet_owner._FLEET_MODELS_AT = time.time()
         _web_client.post("/api/fleet/models/opencode", json={"provider": "opencode-go", "model": "m1"})
         r = _web_client.delete("/api/fleet/models/opencode")
         assert r.status_code == 200
@@ -335,8 +341,8 @@ class TestFleetModelsPersistence:
 
     def test_invalid_model_regex_rejected(self, _web_client, monkeypatch):
         import hermes_cli.web_server as ws
-        ws._FLEET_MODELS_CACHE = {"opencode-go": {"models": []}, "commandcode": {"models": []}, "openrouter": {"models": []}}
-        ws._FLEET_MODELS_AT = time.time()
+        _fleet_owner._FLEET_MODELS_CACHE = {"opencode-go": {"models": []}, "commandcode": {"models": []}, "openrouter": {"models": []}}
+        _fleet_owner._FLEET_MODELS_AT = time.time()
         resp = _web_client.post("/api/fleet/models/opencode", json={"provider": "opencode-go", "model": "bad model with spaces!"})
         assert resp.status_code == 400
 

@@ -106,5 +106,8 @@ class TestOpencodeKeepaliveWiring:
         hc = AIAgent._build_keepalive_http_client("https://api.openai.com")
         assert hc is not None
         for _, t in hc._mounts.items():
-            assert type(t).__name__ == "HTTPTransport"
+            # Post upstream shared-pool refactor the default transport is
+            # _SharedTransport, not a bare HTTPTransport. What matters here
+            # is that non-opencode hosts never get the model-first rewrite.
+            assert type(t).__name__ in ("HTTPTransport", "_SharedTransport")
             assert "Opencode" not in type(t).__name__
