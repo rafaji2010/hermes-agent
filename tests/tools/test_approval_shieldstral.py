@@ -1,6 +1,7 @@
 """Shieldstral guard integration in the approval flow (M13.2).
 
-Covers the decisions made in tools/approval.py around the local
+Covers the decisions made in tools/approval_smart.py (re-homed from
+tools/approval.py by the M13.1/M13.2 split) around the local
 shieldstral_verdict() result:
 
 - True + escalate=False (default) -> immediate hard block, no cloud call.
@@ -8,11 +9,18 @@ shieldstral_verdict() result:
                                      command escalates to the owner prompt.
 - False / None                    -> pass through to the cloud smart-approval
                                      LLM exactly as before.
+
+Patch targets mirror tests/tools/test_approval.py's smart-flow setup: the
+config lives in tools.approval_context and the guardian-LLM entry point in
+tools.approval_smart (the flow resolves both via module attributes at call
+time, so patching the defining modules is the seam).
 """
 
 import pytest
 
 import tools.approval as mod
+import tools.approval_context as approval_context
+import tools.approval_smart as approval_smart
 from tools import shieldstral_guard
 
 SMART_COMMAND = "python -c \"print('hello')\""
@@ -24,7 +32,7 @@ def smart_flow(monkeypatch):
     monkeypatch.setenv("HERMES_SESSION_KEY", "test-shieldstral")
     monkeypatch.setenv("HERMES_EXEC_ASK", "1")
     monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
-    monkeypatch.setattr(mod, "_get_approval_config", lambda: {"mode": "smart"})
+    monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"mode": "smart"})
     monkeypatch.setattr(mod, "_YOLO_MODE_FROZEN", False)
     monkeypatch.setattr(
         "tools.tirith_security.check_command_security",
@@ -46,7 +54,7 @@ class TestShieldstralHardBlock:
         def _boom(*_a, **_k):
             raise AssertionError("cloud smart-approval LLM must not be called on hard block")
 
-        monkeypatch.setattr(mod, "_smart_approve", _boom)
+        monkeypatch.setattr(approval_smart, "_smart_approve", _boom)
 
         result = mod.check_all_command_guards(SMART_COMMAND, "local")
 
@@ -69,7 +77,7 @@ class TestShieldstralEscalate:
         def _boom(*_a, **_k):
             raise AssertionError("cloud smart-approval LLM must not be called on escalation")
 
-        monkeypatch.setattr(mod, "_smart_approve", _boom)
+        monkeypatch.setattr(approval_smart, "_smart_approve", _boom)
         # Owner prompt answered "deny" through a selected transport: the
         # result must be the user-denied shape, NOT the guard's hard block.
         monkeypatch.setattr(
@@ -97,7 +105,7 @@ class TestShieldstralEscalate:
         def _boom(*_a, **_k):
             raise AssertionError("cloud smart-approval LLM must not be called on escalation")
 
-        monkeypatch.setattr(mod, "_smart_approve", _boom)
+        monkeypatch.setattr(approval_smart, "_smart_approve", _boom)
         monkeypatch.setattr(
             mod,
             "_present_with_selected_transport",
@@ -114,7 +122,7 @@ class TestShieldstralPassThrough:
     def test_false_passes_through_to_smart_llm(self, monkeypatch, smart_flow):
         monkeypatch.setattr(shieldstral_guard, "shieldstral_verdict", lambda command: False)
         monkeypatch.setattr(shieldstral_guard, "_get_shieldstral_config", lambda: {"enabled": True})
-        monkeypatch.setattr(mod, "_smart_approve", lambda *_a: "approve")
+        monkeypatch.setattr(approval_smart, "_smart_approve", lambda *_a: "approve")
 
         result = mod.check_all_command_guards(SMART_COMMAND, "local")
 
@@ -124,7 +132,7 @@ class TestShieldstralPassThrough:
     def test_none_fails_open_to_smart_llm(self, monkeypatch, smart_flow):
         monkeypatch.setattr(shieldstral_guard, "shieldstral_verdict", lambda command: None)
         monkeypatch.setattr(shieldstral_guard, "_get_shieldstral_config", lambda: {"enabled": True})
-        monkeypatch.setattr(mod, "_smart_approve", lambda *_a: "approve")
+        monkeypatch.setattr(approval_smart, "_smart_approve", lambda *_a: "approve")
 
         result = mod.check_all_command_guards(SMART_COMMAND, "local")
 
