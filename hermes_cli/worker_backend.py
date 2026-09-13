@@ -1075,10 +1075,17 @@ class AntigravityBackend(SubprocessBackend):
     def _build_command(self, request: WorkerSpec) -> list[str]:
         model, _ = _worker_config("antigravity", request.constraints, None)
         binary = resolve_binary("antigravity")
-        command = [str(binary) if binary is not None else "agy", "--print"]
+        # --print consumes the NEXT argument as its prompt, so the task must
+        # directly follow it; every flag goes before --print. Headless print
+        # mode also auto-denies the command tool without the skip-permissions
+        # flag (observed live: file writes pass, shell commands get denied).
+        command = [
+            str(binary) if binary is not None else "agy",
+            "--dangerously-skip-permissions",
+        ]
         if model:
             command += ["--model", model]
-        command.append(request.task)
+        command += ["--print", request.task]
         return command
 
 

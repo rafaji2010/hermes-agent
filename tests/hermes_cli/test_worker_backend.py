@@ -303,7 +303,7 @@ def test_antigravity_command_uses_agy_print_flag():
     resolved = Path("/home/u/.local/bin/agy")
     with patch.object(backend, "resolve_binary", return_value=resolved):
         command = inst._build_command(WorkerSpec(worker_type="antigravity", task="hello"))
-    assert command == [str(resolved), "--print", "hello"]
+    assert command == [str(resolved), "--dangerously-skip-permissions", "--print", "hello"]
 
 
 def test_antigravity_command_falls_back_and_passes_model():
@@ -312,7 +312,7 @@ def test_antigravity_command_falls_back_and_passes_model():
         backend, "_worker_config", return_value=("gemini-3.8-flash-high", "")
     ):
         command = inst._build_command(WorkerSpec(worker_type="antigravity", task="hello"))
-    assert command == ["agy", "--print", "--model", "gemini-3.8-flash-high", "hello"]
+    assert command == ["agy", "--dangerously-skip-permissions", "--model", "gemini-3.8-flash-high", "--print", "hello"]
 
 
 def test_detect_pi_flag_prefers_long_flag():
