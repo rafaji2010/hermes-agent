@@ -14,7 +14,7 @@ import { useI18n } from '@/i18n'
 import { Search } from '@/lib/icons'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
-import { normalize } from '@/lib/text'
+import { foldIncludes, normalize } from '@/lib/text'
 import {
   $visibleModels,
   collapseModelFamilies,
@@ -80,7 +80,7 @@ export function ModelVisibilityDialog({
   const q = normalize(search)
 
   const matches = (provider: ModelOptionProvider, model: string) =>
-    !q || `${model} ${provider.name} ${provider.slug} ${displayModelName(model)}`.toLowerCase().includes(q)
+    !q || foldIncludes(`${model} ${provider.name} ${provider.slug} ${displayModelName(model)}`, q)
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
@@ -133,7 +133,7 @@ export function ModelVisibilityDialog({
                       type="button"
                     >
                       <span className="min-w-0 truncate">
-                        <HighlightMatches query={search} text={provider.name} />
+                        <HighlightMatches foldSeparators query={search} text={provider.name} />
                       </span>
                       <DisclosureCaret
                         className="shrink-0 opacity-0 transition group-hover/label:opacity-100"
@@ -157,7 +157,7 @@ export function ModelVisibilityDialog({
                           key={key}
                         >
                           <span className="min-w-0 flex-1 truncate">
-                            <HighlightMatches query={search} text={name} />
+                            <HighlightMatches foldSeparators query={search} text={name} />
                             {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
                           </span>
                           <Switch
