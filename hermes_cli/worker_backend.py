@@ -1906,6 +1906,10 @@ def run_workers_cli_command(args) -> int:
         print("[experimental] dsh backend — long-horizon / deep-reasoning harness")
 
     attempts = retry + 1
+    # Tracks whether the previous attempt failed with an upstream-gateway
+    # brownout (server-side fault, not a task failure): the next opencode
+    # attempt then retries on OPENCODE_FALLBACK_MODEL instead (§29).
+    _last_opencode_brownout = False
     for attempt in range(1, attempts + 1):
         if attempt > 1:
             if switch_on_failure:
@@ -1980,6 +1984,10 @@ def run_workers_cli_command(args) -> int:
         if final.get("result"):
             print("--- output ---", file=sys.stderr)
             print(final["result"], file=sys.stderr)
+
+        _last_opencode_brownout = (
+            worker_type == "opencode" and _is_gateway_brownout(final.get("error"))
+        )
 
     return 1
 
