@@ -143,14 +143,15 @@ def _make_opencode_db(db_path: Path, messages: list, session_cols: bool = False)
 def disable_opencode_cli(monkeypatch):
     """Force the opencode DB path by making the CLI collector fail (as it does
     on machines without ``opencode`` on PATH)."""
-    from hermes_cli import web_server
+    from hermes_cli.web_routers import usage as usage_router
 
-    monkeypatch.setattr(web_server, "_run_opencode_stats_cli", lambda: None)
+    monkeypatch.setattr(usage_router, "_run_opencode_stats_cli", lambda: None)
 
 
 def test_opencode_db_json_aggregation(tmp_path, monkeypatch, disable_opencode_cli):
     """JSON ``data`` blobs on the message table aggregate into tokens/sessions."""
     from hermes_cli import web_server
+    from hermes_cli.web_routers import usage as usage_router
 
     db_path = tmp_path / "opencode.db"
     # Sample blobs shaped like the verified opencode message.data JSON.
@@ -176,7 +177,7 @@ def test_opencode_db_json_aggregation(tmp_path, monkeypatch, disable_opencode_cl
         conn.commit()
     finally:
         conn.close()
-    monkeypatch.setattr(web_server, "_opencode_db_path", lambda: db_path)
+    monkeypatch.setattr(usage_router, "_opencode_db_path", lambda: db_path)
 
     result = web_server._get_opencode_usage()
 
@@ -190,6 +191,7 @@ def test_opencode_db_json_aggregation(tmp_path, monkeypatch, disable_opencode_cl
 def test_opencode_db_columnar_aggregation(tmp_path, monkeypatch, disable_opencode_cli):
     """Newer stores with session-level cost/tokens_* columns are preferred."""
     from hermes_cli import web_server
+    from hermes_cli.web_routers import usage as usage_router
 
     db_path = tmp_path / "opencode.db"
     _make_opencode_db(db_path, [], session_cols=True)
@@ -205,7 +207,7 @@ def test_opencode_db_columnar_aggregation(tmp_path, monkeypatch, disable_opencod
         conn.commit()
     finally:
         conn.close()
-    monkeypatch.setattr(web_server, "_opencode_db_path", lambda: db_path)
+    monkeypatch.setattr(usage_router, "_opencode_db_path", lambda: db_path)
 
     result = web_server._get_opencode_usage()
 
@@ -231,9 +233,10 @@ def test_opencode_db_columnar_aggregation(tmp_path, monkeypatch, disable_opencod
 def test_opencode_db_absent(tmp_path, monkeypatch, disable_opencode_cli):
     """Missing opencode DB → graceful error entry, no crash."""
     from hermes_cli import web_server
+    from hermes_cli.web_routers import usage as usage_router
 
     missing = tmp_path / "nope" / "opencode.db"
-    monkeypatch.setattr(web_server, "_opencode_db_path", lambda: missing)
+    monkeypatch.setattr(usage_router, "_opencode_db_path", lambda: missing)
 
     result = web_server._get_opencode_usage()
 
@@ -248,6 +251,7 @@ def test_opencode_db_absent(tmp_path, monkeypatch, disable_opencode_cli):
 def test_commandcode_session_count(tmp_path, monkeypatch):
     """JSONL transcripts are counted; checkpoints files are excluded."""
     from hermes_cli import web_server
+    from hermes_cli.web_routers import usage as usage_router
 
     projects = tmp_path / "projects"
     projects.mkdir()
@@ -256,7 +260,7 @@ def test_commandcode_session_count(tmp_path, monkeypatch):
     (projects / "p2.jsonl").write_text("""{"id":"b","createdAt":"t","prompt":"p","messageCount":0,"files":[]}
 """)
     (projects / "p1.checkpoints.jsonl").write_text("{}")
-    monkeypatch.setattr(web_server, "_commandcode_projects_dir", lambda: projects)
+    monkeypatch.setattr(usage_router, "_commandcode_projects_dir", lambda: projects)
 
     result = web_server._get_commandcode_usage()
 
@@ -270,13 +274,14 @@ def test_commandcode_session_count(tmp_path, monkeypatch):
 def test_commandcode_nested_projects(tmp_path, monkeypatch):
     """Transcripts under nested project directories are all counted."""
     from hermes_cli import web_server
+    from hermes_cli.web_routers import usage as usage_router
 
     projects = tmp_path / "projects"
     nested = projects / "tmp-some-project"
     nested.mkdir(parents=True)
     for name in ("a.jsonl", "b.jsonl", "c.checkpoints.jsonl", "d.meta.json"):
         (nested / name).write_text("{}")
-    monkeypatch.setattr(web_server, "_commandcode_projects_dir", lambda: projects)
+    monkeypatch.setattr(usage_router, "_commandcode_projects_dir", lambda: projects)
 
     result = web_server._get_commandcode_usage()
 
@@ -286,9 +291,10 @@ def test_commandcode_nested_projects(tmp_path, monkeypatch):
 def test_commandcode_missing_dir(tmp_path, monkeypatch):
     """No transcripts dir → zero sessions, no error."""
     from hermes_cli import web_server
+    from hermes_cli.web_routers import usage as usage_router
 
     monkeypatch.setattr(
-        web_server, "_commandcode_projects_dir", lambda: tmp_path / "absent"
+        usage_router, "_commandcode_projects_dir", lambda: tmp_path / "absent"
     )
 
     result = web_server._get_commandcode_usage()
@@ -300,6 +306,7 @@ def test_commandcode_missing_dir(tmp_path, monkeypatch):
 def test_commandcode_per_model_counts(tmp_path, monkeypatch):
     """Assistant messages per model are counted from real transcript JSONL."""
     from hermes_cli import web_server
+    from hermes_cli.web_routers import usage as usage_router
 
     projects = tmp_path / "projects"
     projects.mkdir()
@@ -315,7 +322,7 @@ def test_commandcode_per_model_counts(tmp_path, monkeypatch):
         json.dumps({"type": "message", "message": {"role": "assistant"}}),
     ])
     (projects / "p1.jsonl").write_text(lines + "\n")
-    monkeypatch.setattr(web_server, "_commandcode_projects_dir", lambda: projects)
+    monkeypatch.setattr(usage_router, "_commandcode_projects_dir", lambda: projects)
 
     result = web_server._get_commandcode_usage()
 
@@ -432,9 +439,10 @@ def test_parse_opencode_stats_garbage_returns_none():
 def test_opencode_cli_path(monkeypatch):
     """The CLI collector shapes models for the dashboard when available."""
     from hermes_cli import web_server
+    from hermes_cli.web_routers import usage as usage_router
 
     monkeypatch.setattr(
-        web_server,
+        usage_router,
         "_run_opencode_stats_cli",
         lambda: {
             "sessions": 3,
@@ -478,6 +486,7 @@ def test_opencode_cli_path(monkeypatch):
 def test_openrouter_per_model_split(monkeypatch):
     """Real spend is split across locally-recorded OpenRouter models."""
     from hermes_cli import web_server
+    from hermes_cli.web_routers import usage as usage_router
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
 
@@ -492,7 +501,7 @@ def test_openrouter_per_model_split(monkeypatch):
 
     monkeypatch.setattr(web_server.httpx, "get", _fake_get)
     monkeypatch.setattr(
-        web_server,
+        usage_router,
         "_openrouter_session_models",
         lambda profile: [
             {
@@ -578,11 +587,12 @@ def test_usage_providers_endpoint_shape(tmp_path, monkeypatch):
         pytest.skip("fastapi/starlette not installed")
 
     from hermes_cli import web_server
+    from hermes_cli.web_routers import usage as usage_router
 
     # Pin each source to deterministic output so the endpoint shape is what we
     # assert, not whatever the live machine happens to have.
     monkeypatch.setattr(
-        web_server,
+        usage_router,
         "_get_openrouter_usage",
         lambda profile: {
             "provider": "openrouter",
@@ -594,7 +604,7 @@ def test_usage_providers_endpoint_shape(tmp_path, monkeypatch):
         },
     )
     monkeypatch.setattr(
-        web_server,
+        usage_router,
         "_get_opencode_usage",
         lambda: {
             "provider": "opencode",
@@ -606,7 +616,7 @@ def test_usage_providers_endpoint_shape(tmp_path, monkeypatch):
         },
     )
     monkeypatch.setattr(
-        web_server,
+        usage_router,
         "_get_commandcode_usage",
         lambda: {
             "provider": "commandcode",
