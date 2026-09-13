@@ -1060,6 +1060,28 @@ class DshBackend(SubprocessBackend):
         return ["dsh", "--profile", "headless", request.task]
 
 
+class AntigravityBackend(SubprocessBackend):
+    """``agy --print "<task>"`` -- Google Antigravity headless CLI.
+
+    The harness is installed as the ``antigravity`` GUI wrapper; the headless
+    task CLI is ``agy`` (resolved via the workers registry's ``antigravity``
+    alias). Print mode runs one prompt non-interactively and auto-approves its
+    file operations (verified 2026-09-13); a pinned model is passed through
+    ``worker_models.json`` when present.
+    """
+
+    worker_type = "antigravity"
+
+    def _build_command(self, request: WorkerSpec) -> list[str]:
+        model, _ = _worker_config("antigravity", request.constraints, None)
+        binary = resolve_binary("antigravity")
+        command = [str(binary) if binary is not None else "agy", "--print"]
+        if model:
+            command += ["--model", model]
+        command.append(request.task)
+        return command
+
+
 #: Per-type backend registry.
 BACKENDS: dict[str, type[SubprocessBackend]] = {
     "pi": PiBackend,
@@ -1067,6 +1089,7 @@ BACKENDS: dict[str, type[SubprocessBackend]] = {
     "opencode": OpencodeBackend,
     "commandcode": CommandCodeBackend,
     "dsh": DshBackend,
+    "antigravity": AntigravityBackend,
 }
 
 

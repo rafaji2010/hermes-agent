@@ -56,6 +56,7 @@ def _all_versions():
         "opencode": "1.18.18",
         "commandcode": "1.26.0",
         "dsh": "0.1.0-rc.6",
+        "agy": "1.0.16",
         "herdr": "herdr 0.8.0",
     }
 
@@ -71,6 +72,7 @@ def test_builtin_capability_map_matches_doc():
         "opencode": ["coding", "testing", "implementation"],
         "commandcode": ["coding", "review"],
         "dsh": ["deep_reasoning", "long_horizon", "coding", "experimental"],
+        "antigravity": ["coding", "implementation", "autonomous_tasks"],
     }
     for name, caps in expected.items():
         assert name in workers.BUILTIN_WORKERS
@@ -111,8 +113,9 @@ def test_detect_workers_versions_and_capabilities(tmp_path):
     with _hermetic_detection(tmp_path, _all_versions()):
         detected = workers.detect_workers(get_hermes_home())
 
-    assert set(detected) == {"pi", "codex", "opencode", "commandcode", "dsh"}
+    assert set(detected) == {"pi", "codex", "opencode", "commandcode", "dsh", "antigravity"}
     assert detected["pi"]["version"] == "0.84.2"
+    assert detected["antigravity"]["version"] == "1.0.16"
     assert detected["pi"]["capabilities"] == workers.BUILTIN_WORKERS["pi"]["capabilities"]
     assert detected["codex"]["version"] == "0.147.0"
     assert detected["opencode"]["version"] == "1.18.18"
@@ -126,6 +129,13 @@ def test_detect_skips_missing_harness(tmp_path):
         detected = workers.detect_workers(get_hermes_home())
     assert set(detected) == set(workers.BUILTIN_WORKERS)
     assert all(entry["version"] is None for entry in detected.values())
+
+
+def test_antigravity_resolves_the_agy_binary(tmp_path):
+    """The harness name maps to its headless CLI; the GUI wrapper is not it."""
+    with _hermetic_detection(tmp_path, {}):
+        resolved = workers._resolve_command("antigravity")
+    assert resolved is not None and resolved.name == "agy"
 
 
 def test_detect_not_installed_returns_empty(tmp_path):

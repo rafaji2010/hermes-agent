@@ -298,6 +298,23 @@ def test_dsh_command_marks_profile_headless():
     ]
 
 
+def test_antigravity_command_uses_agy_print_flag():
+    inst = backend.AntigravityBackend()
+    resolved = Path("/home/u/.local/bin/agy")
+    with patch.object(backend, "resolve_binary", return_value=resolved):
+        command = inst._build_command(WorkerSpec(worker_type="antigravity", task="hello"))
+    assert command == [str(resolved), "--print", "hello"]
+
+
+def test_antigravity_command_falls_back_and_passes_model():
+    inst = backend.AntigravityBackend()
+    with patch.object(backend, "resolve_binary", return_value=None), patch.object(
+        backend, "_worker_config", return_value=("gemini-3.8-flash-high", "")
+    ):
+        command = inst._build_command(WorkerSpec(worker_type="antigravity", task="hello"))
+    assert command == ["agy", "--print", "--model", "gemini-3.8-flash-high", "hello"]
+
+
 def test_detect_pi_flag_prefers_long_flag():
     backend.reset_pi_flag_cache()
     with patch.object(

@@ -54,6 +54,10 @@ BUILTIN_WORKERS: dict[str, dict] = {
         "capabilities": ["deep_reasoning", "long_horizon", "coding", "experimental"],
         "herdr": False,
     },
+    "antigravity": {
+        "capabilities": ["coding", "implementation", "autonomous_tasks"],
+        "herdr": False,
+    },
 }
 
 #: Fleet-layer tool (not a worker itself, but reported alongside the fleet).
@@ -77,7 +81,12 @@ HERMES_HERDR_PLUGIN = Path("plugins") / "herdr-agent-state" / "__init__.py"
 EXTRA_LOCATIONS: dict[str, list[str]] = {
     "dsh": ["~/.local/bin/dsh"],
     "commandcode": ["~/.nvm/versions/node/*/bin/commandcode"],
+    "agy": ["~/.local/bin/agy"],
 }
+
+#: Worker-name -> binary-name overrides. The Antigravity harness is installed
+#: as the ``antigravity`` GUI wrapper; the headless task CLI is ``agy``.
+_BINARY_ALIASES: dict[str, str] = {"antigravity": "agy"}
 
 _VERSION_RE = re.compile(r"v?\d+\.\d+[\w.\-]*")
 _TIMEOUT_SECONDS = 5
@@ -101,6 +110,7 @@ def _resolve_command(name: str) -> Path | None:
     Checks PATH first, then well-known extra locations (e.g. commandcode
     under ``~/.nvm/versions/node/*/bin``, dsh under ``~/.local/bin``).
     """
+    name = _BINARY_ALIASES.get(name, name)
     on_path = shutil.which(name)
     if on_path:
         return Path(on_path)
