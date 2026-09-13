@@ -278,7 +278,7 @@ def build_workers_parser(subparsers, *, cmd_workers: Callable) -> None:
     )
     _model.add_argument("worker", help="Worker/harness name (e.g. opencode, commandcode, pi, dsh, codex, or custom)")
     _model.add_argument("model", nargs="?", default="", help="Model id to pin (e.g. claude-sonnet-4, anthropic/claude-3.7-sonnet)")
-    _model.add_argument("--provider", default="", help="Provider slug (opencode-go, commandcode, openrouter)")
+    _model.add_argument("--provider", default="", help="Provider slug (opencode-go, commandcode, openrouter, antigravity)")
     _model.add_argument("--clear", action="store_true", help="Clear the pinned model for this worker")
 
     workers_parser.set_defaults(func=cmd_workers)

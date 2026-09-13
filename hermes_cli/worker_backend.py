@@ -556,7 +556,7 @@ def execution_history_path(hermes_home: Path | None = None) -> Path:
 WORKER_MODELS_FILE = "worker_models.json"
 
 #: Allowed provider slugs for worker model picker.
-ALLOWED_MODEL_PROVIDERS = frozenset({"opencode-go", "commandcode", "openrouter"})
+ALLOWED_MODEL_PROVIDERS = frozenset({"opencode-go", "commandcode", "openrouter", "antigravity"})
 
 #: Regex for model IDs (prompt § Validation).
 _MODEL_RE = re.compile(r"^[A-Za-z0-9._/:-]{1,128}$")
