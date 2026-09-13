@@ -423,7 +423,10 @@ class TestPerHarnessWiring:
             cmd = backend._build_command(req)
             assert "--model" in cmd
             idx = cmd.index("--model")
-            assert cmd[idx+1] == "opencode-model-xyz"
+            # The pin composes provider/model (the gateway requires the
+            # provider-qualified id; bare ids 503'd) — keep the assertion
+            # aligned with OpencodeBackend._build_command.
+            assert cmd[idx+1] == "opencode-go/opencode-model-xyz"
         finally:
             reset_hermes_home_override(token)
 
