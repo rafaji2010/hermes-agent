@@ -7,6 +7,7 @@ splits sessions via parent_session_id chains; sessions are source-tagged
 
 import asyncio
 import atexit
+import errno
 import hashlib
 import json
 import logging
@@ -222,10 +223,20 @@ def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
     """Create/tighten a writable state database and its sidecars to 0600.
 
     SQLite otherwise creates ``state.db``, ``-wal``, and ``-shm`` according to
-    the process umask (commonly 0644 under 0022). Use file descriptors so a
-    missing main database is private from its first byte and O_NOFOLLOW can
-    refuse a planted symlink. Read-only SessionDB attachments never call this
-    helper and remain observational.
+    the process umask (commonly 0644 under 0022). The mode is applied by PATH
+    (:func:`os.chmod`) — never by opening a descriptor: closing any descriptor
+    to a file cancels every POSIX advisory lock this process holds on it
+    (howtocorrupt §2.2), and this helper also runs *after* the writer connection
+    is open (``_open_writer_conn``).  A canceled lock set lets the next sibling
+    opener's clean close treat itself as the LAST connection and unlink the live
+    ``-wal``/``-shm`` generation underneath this process — the split-brain that
+    fail-closes every later open as DeletedWalGenerationError (#105670).
+
+    A missing main database (``create_main``) is still created by descriptor so
+    it is private from its first byte — a just-created inode cannot carry this
+    process's locks, so closing that one descriptor cannot cancel any.  A
+    planted symlink refuses exactly like the previous O_NOFOLLOW open.  Read-only
+    SessionDB attachments never call this helper and remain observational.
     """
     if os.name == "nt":
         return
@@ -237,21 +248,27 @@ def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
             db_path.with_name(db_path.name + "-shm"),
         )
     ):
-        flags = os.O_RDONLY
-        if index == 0 and create_main:
-            flags = os.O_WRONLY | os.O_CREAT
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        if hasattr(os, "O_CLOEXEC"):
-            flags |= os.O_CLOEXEC
+        if os.path.islink(path):
+            # chmod follows links; refuse a planted symlink like O_NOFOLLOW did.
+            raise OSError(errno.ELOOP, "planted symlink refused", str(path))
         try:
-            fd = os.open(path, flags, 0o600)
-        except FileNotFoundError:
+            os.chmod(path, 0o600)
             continue
+        except FileNotFoundError:
+            pass
         except IsADirectoryError:
             # Not a database file at all; sqlite3.connect() raises the
             # canonical error for this, and a directory leaks no row data.
             continue
+        if not (index == 0 and create_main):
+            continue
+        # Any other OSError propagates, as the predecessor's fchmod did.
+        flags = os.O_WRONLY | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        fd = os.open(path, flags, 0o600)
         try:
             os.fchmod(fd, 0o600)
         finally:
