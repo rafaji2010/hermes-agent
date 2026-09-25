@@ -110,6 +110,18 @@ def routed_model_rejects_vision_tool_messages(provider: str, model: str) -> bool
     return target_profile is not None and target_profile.supports_vision_tool_messages is False
 
 
+def provider_rejects_reasoning_details(provider: str) -> bool:
+    """Whether the provider's relay rejects OpenRouter replay extras on messages.
+
+    Some relays validate message fields strictly and 400 with ``Extra inputs are
+    not permitted, field: 'messages[N].reasoning_details'``; the rejected row
+    stays in history, so every later call dies too. Missing or unrecognized
+    identities deliberately fail open.
+    """
+    profile = get_provider_profile(str(provider or "").strip().lower())
+    return profile is not None and profile.supports_reasoning_details is False
+
+
 def list_providers() -> list[ProviderProfile]:
     """Return all registered provider profiles (one per canonical name)."""
     global _PROVIDER_LIST_CACHE

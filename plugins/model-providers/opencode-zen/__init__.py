@@ -85,6 +85,10 @@ opencode_zen = OpenCodeZenProfile(
     name="opencode-zen", aliases=("opencode", "opencode_zen", "zen"), env_vars=("OPENCODE_ZEN_API_KEY",),
     base_url="https://opencode.ai/zen/v1", default_headers=dict(_ATTRIBUTION_HEADERS),
     default_aux_model="gemini-3-flash",
+    # The Zen relay strictly validates message fields: OpenRouter replay extras 400 with
+    # ``Extra inputs are not permitted, field: 'messages[N].reasoning_details'`` and the
+    # rejected row stays in history, so every later call dies too.
+    supports_reasoning_details=False,
 )
 
 opencode_go = OpenCodeGoProfile(

@@ -1086,6 +1086,14 @@ def build_api_messages(
 
     has_current = isinstance(current_turn_user_idx, int) and 0 <= current_turn_user_idx < len(messages)
     current_turn_message = messages[current_turn_user_idx] if has_current else None
+    # Relays that strictly validate message fields (opencode-zen 400s "Extra inputs
+    # are not permitted" on reasoning_details) must not receive the OpenRouter replay
+    # extras; the provider profile gates it, unknown providers fail open.
+    try:
+        from providers import provider_rejects_reasoning_details
+        _strip_reasoning_details = provider_rejects_reasoning_details(_str_attr(agent, "provider"))
+    except Exception:
+        _strip_reasoning_details = False
 
     # Replay consumers canonicalize the persisted prefix on read; the request copy must
     # carry the same bytes or a resume diverges mid-prefix. Only the rows BEFORE this
@@ -1157,8 +1165,11 @@ def build_api_messages(
             agent._sanitize_tool_calls_for_strict_api(
                 api_msg, model=_sanitize_model_for(agent, moa_config)
             )
-        # 'reasoning_details' is kept: OpenRouter uses it for multi-turn reasoning
-        # continuity.
+        # 'reasoning_details' replay is kept for relays that accept it (OpenRouter
+        # uses it for multi-turn reasoning continuity); strict relays 400 on the
+        # field, so the provider profile gates it.
+        if _strip_reasoning_details:
+            api_msg.pop("reasoning_details", None)
         api_messages.append(api_msg)
 
     # Final system message = cached prompt + ephemeral additions (API-time only).

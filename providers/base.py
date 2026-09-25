@@ -74,6 +74,13 @@ class ProviderProfile:
     # (e.g. Xiaomi MiMo, which returns 400 "text is not set").
     supports_vision_tool_messages: bool = True
 
+    # True when the relay accepts OpenRouter-style ``reasoning_details`` replay
+    # extras on assistant messages.  Set to False for relays that strictly
+    # validate message fields and reject unknown keys (opencode-zen 400s
+    # "Extra inputs are not permitted, field: 'messages[N].reasoning_details'");
+    # the send path then strips the field from the wire copy only.
+    supports_reasoning_details: bool = True
+
     # True only when this provider's Chat Completions endpoint explicitly
     # documents ``prompt_cache_key`` as an accepted request body field.  This
     # is deliberately opt-in: many OpenAI-compatible endpoints reject unknown
