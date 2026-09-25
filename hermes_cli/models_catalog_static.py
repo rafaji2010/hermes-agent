@@ -221,6 +221,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Synced against opencode.ai/docs/zen + live GET /zen/v1/models. Zen/Go are
     # _LIVE_FIRST_PICKER_PROVIDERS, so this is a discovery floor: live entries lead in the picker
     # and stale curated names never pollute the top. "x-preview-f-free" = "Ox Alpha" stealth model.
+    # Client-gated free-tier SKUs are excluded (relay 403s FreeTierError for API consumers; see
+    # _OPENCODE_CLIENT_GATED_MODELS in models.py, which also filters the live listing).
     "opencode-zen": [
         "x-preview-f-free", "kimi-k3", "kimi-k2.5", "kimi-k2.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
         "gpt-5.5", "gpt-5.5-pro", "gpt-5.4-pro", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex",
@@ -231,9 +233,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro", "gemini-3-flash",
         "grok-4.6", "grok-4.5", "grok-build-0.1", "muse-spark-1.2", "minimax-m3", "minimax-m2.7", "minimax-m2.5",
         "glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5", "kimi-k2.7-code", "deepseek-v4-pro",
-        "deepseek-v4-flash", "qwen3.6-plus", "qwen3.5-plus", "big-pickle", "mimo-v2.5-free",
-        "nemotron-3-ultra-free", "nemotron-3.5-lightning-free",
-        "muse-spark-1.2-contributor-free", "muse-spark-1.3-contributor-free",
+        "deepseek-v4-flash", "qwen3.6-plus", "qwen3.5-plus",
     ],
     # Synced against opencode.ai/docs/go + live GET /zen/go/v1/models. Known-delisted models are
     # REMOVED (the live-first merge would otherwise keep offering a model that 401s): "ox-alpha-free"

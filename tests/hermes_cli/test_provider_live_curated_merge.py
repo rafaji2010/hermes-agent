@@ -1,6 +1,6 @@
 """Tests for live+curated merge in the generic profile-based provider path.
 
-Guards two contracts:
+Guards three contracts:
 
 * #46850 — when a provider's live /v1/models endpoint returns a stale or
   incomplete list, the static curated models from ``_PROVIDER_MODELS`` must
@@ -10,14 +10,20 @@ Guards two contracts:
   leads even when the live API lags. ``_LIVE_FIRST_PICKER_PROVIDERS``
   (OpenCode Zen / Go) flip to **live-first** because their live API is the
   authoritative catalog and stale curated entries must not lead the picker.
+* #49433 — client-gated free-tier SKUs (403 FreeTierError: "OpenCode's free
+  tier can only be used from within OpenCode") never surface in the Zen/Go
+  pickers: the curated floor drops them and the live fetch filters them out
+  of the merge.
 """
 
 from unittest.mock import MagicMock, patch
 
 from hermes_cli.models import (
     _LIVE_FIRST_PICKER_PROVIDERS,
+    _OPENCODE_CLIENT_GATED_MODELS,
     provider_model_ids,
 )
+from hermes_cli.models_catalog_static import _PROVIDER_MODELS
 
 
 class TestGenericProviderLiveCuratedMerge:
@@ -106,3 +112,28 @@ class TestGenericProviderLiveCuratedMerge:
         assert "ox-alpha-free" not in result
         assert {"deepseek-v4-flash", "kimi-k3", "omen-alpha"} <= set(result)
 
+    def test_opencode_zen_does_not_offer_client_gated_free_skus(self):
+        """#49433 class, end-to-end through provider_model_ids with the REAL curated floor: the
+        Zen relay LISTS free-tier SKUs but serves them only to OpenCode's own client — every
+        third-party API consumer gets 403 FreeTierError, so a picker entry for them is always a
+        dead pick. REVERT-PROOF: an unfiltered live list re-adds a gated id and this fails.
+        ``space-bunny-free`` is NOT gated and must survive."""
+        live = [
+            "deepseek-v4.1-flash", "space-bunny-free", "big-pickle",
+            "mimo-v2.5-free", "muse-spark-1.3-contributor-free",
+        ]
+
+        with (
+            patch("providers.get_provider_profile", return_value=self._make_profile(live)),
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={"api_key": "k", "base_url": ""},
+            ),
+        ):
+            result = provider_model_ids("opencode-zen")
+
+        assert not (_OPENCODE_CLIENT_GATED_MODELS & set(result))
+        assert "space-bunny-free" in result
+        # The curated floor carries no client-gated ids (removing them is part of the contract —
+        # the live-first merge would otherwise resurrect them from the floor).
+        assert not (_OPENCODE_CLIENT_GATED_MODELS & set(_PROVIDER_MODELS["opencode-zen"]))

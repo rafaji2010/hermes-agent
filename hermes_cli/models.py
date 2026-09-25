@@ -1445,6 +1445,17 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
 # into a 400/403 (#111749).
 _OPENCODE_FREE_EXCLUDED_MODELS = frozenset({"ox-alpha-free", "deepseek-v4-flash-free"})
 
+# ``-free`` SKUs the Zen relay LISTS but serves only to OpenCode's OWN client: every third-party
+# API consumer gets 403 FreeTierError ("OpenCode's free tier can only be used from within
+# OpenCode"), so offering them in the picker is always a dead pick. Probed 2026-09-25 with the
+# account key — 9/9 gated; upstream issues #49433 / #49609. ``space-bunny-free`` is NOT gated.
+_OPENCODE_CLIENT_GATED_MODELS = frozenset({
+    "big-pickle", "jev-1.13-free", "ling-3.0-flash-fin-free",
+    "mimo-v2.5-free", "mimo-v2.6-flash-free",
+    "muse-spark-1.2-contributor-free", "muse-spark-1.3-contributor-free",
+    "nemotron-3-ultra-free", "nemotron-3.5-lightning-free",
+})
+
 
 def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     """Generic live fetch for any provider registered in providers/ with ``auth_type="api_key"``.
@@ -1463,9 +1474,11 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     api_key, base_url = _api_key_credentials(normalized)
     live = profile.fetch_models(api_key=api_key, base_url=base_url or profile.base_url or None) if api_key else None
     if live and normalized in _LIVE_FIRST_PICKER_PROVIDERS:
-        # The relay still LISTS delisted ids it no longer serves; the keyed Zen/Go picker is
-        # live-first, so it filters them out here (#111749).
-        live = [m for m in live if str(m).lower() not in _OPENCODE_FREE_EXCLUDED_MODELS]
+        # The relay still LISTS ids it no longer serves (delisted promos) or serves only to its
+        # own client (client-gated free tier); the keyed Zen/Go picker is live-first, so it
+        # filters both out here (#111749, #49433).
+        _excluded = _OPENCODE_FREE_EXCLUDED_MODELS | _OPENCODE_CLIENT_GATED_MODELS
+        live = [m for m in live if str(m).lower() not in _excluded]
     if not live:
         return list(profile.fallback_models) if profile.fallback_models else None
     curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())
