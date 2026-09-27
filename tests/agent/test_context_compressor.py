@@ -5,6 +5,8 @@ import re
 import sqlite3
 import pytest
 import time
+import httpx
+import openai
 from unittest.mock import patch, MagicMock
 
 from agent.context_compressor import (
@@ -20,6 +22,9 @@ from agent.context_compressor import (
     _truncate_tool_call_args_json,
 )
 from hermes_state import SessionDB
+from agent.auxiliary_client import CODEX_STREAM_STALL_MARKER
+
+_REQ = httpx.Request("POST", "http://x")
 
 
 class StubProviderError(Exception):
@@ -1328,6 +1333,28 @@ class TestStreamingClosedFailure:
         assert generic._last_summary_network_failure is False
         # Short transient cooldown, strictly below the generic-failure cooldown.
         assert 1000.0 < closed._summary_failure_cooldown_until < generic._summary_failure_cooldown_until
+
+    def test_codex_stall_is_ladder_timeout_not_terminal_network_failure(self):
+        """#124077: a Codex stream-guard mid-stream stall is a retry-ladder timeout."""
+        from agent.auxiliary_client import _CodexStreamGuard
+        guard = _CodexStreamGuard(None, 300.0)
+        guard.saw_content.set()  # mid-stream: content arrived, then the stream went quiet
+        c = self._fail_on_main(TimeoutError(guard.timeout_message()))
+        assert c._last_summary_network_failure is False
+        assert c._consecutive_timeout_failures == 1
+
+    @pytest.mark.parametrize(
+        "err",
+        [
+            openai.APITimeoutError(request=_REQ),
+            openai.APIConnectionError(message=f"upstream {CODEX_STREAM_STALL_MARKER}", request=_REQ),
+        ],
+        ids=["api_timeout", "connection_error_with_stall_text"],
+    )
+    def test_transport_errors_stay_terminal_network_failure(self, err):
+        """Real transport errors stay terminal (#29559/#94448), even when their text
+        happens to contain the stall marker: only a TimeoutError stall is reclassified."""
+        assert self._fail_on_main(err)._last_summary_network_failure is True
 
 
 class TestAuxModelFallbackSurfacedToCallers:

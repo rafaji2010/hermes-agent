@@ -24,6 +24,7 @@ from agent.compression_marker import (
     elide_middle,
 )
 from agent.auxiliary_client import (
+    CODEX_STREAM_STALL_MARKER,
     AuxiliaryExplicitCancellation,
     _coerce_llm_message,
     _is_connection_error,
@@ -744,16 +745,20 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
     """
     status = _exc_status_code(e)
     err = str(e).lower()
+    # #124077: only the Codex aux stream guard's mid-stream stall is a retry-ladder timeout; real
+    # transport timeouts and the guard's no-progress/hard-ceiling timeouts stay terminal
+    # network failures (#29559/#94448).
+    stall = isinstance(e, TimeoutError) and CODEX_STREAM_STALL_MARKER in str(e)
     return _SummaryFailureKind(
         # Permanent-looking error on a distinct summary model: fall back to main instead of cooldown.
         model_not_found=status in {404, 503}
         or any(m in err for m in ("model_not_found", "does not exist", "no available channel")),
-        timeout=status in {408, 429, 502, 504} or "timeout" in err or "timed out" in err,
+        timeout=stall or status in {408, 429, 502, 504} or "timeout" in err or "timed out" in err,
         # Malformed/non-JSON bodies (HTML 502 as application/json) surface as JSONDecodeError or
         # APIResponseValidationError "expecting value"; treat as transient.
         json_decode=isinstance(e, json.JSONDecodeError) or "expecting value" in err,
         # httpx premature-close errors are transient; treat like a timeout, not a 60s cooldown.
-        streaming_closed=_is_connection_error(e),
+        streaming_closed=_is_connection_error(e) and not stall,
         # HTTP 200 with empty body from a degraded provider, plus the sibling "no usable response"
         # shapes from _validate_llm_response.
         empty_content=isinstance(e, RuntimeError) and any(
@@ -1991,8 +1996,12 @@ _SECTION_INSTRUCTIONS: Dict[bool, Dict[str, str]] = {
             "Write the summary in the same language the user was using in the "
             "conversation — do not translate or switch to English. "
         ),
-        "historical_task": """[THE SINGLE MOST IMPORTANT FIELD. Capture the user's most recent unfulfilled
-input verbatim — the exact words they used. This includes:
+        "historical_task": """[THE SINGLE MOST IMPORTANT FIELD. Identify the user's most recent unfulfilled
+input precisely, but summarize it in your own words rather than copying long
+passages from the transcript. The compressor inserts a bounded, redacted
+snapshot of the real latest user turn after generation, so the model must not
+reproduce it.
+This includes:
 - Explicit task assignments ("<specific user task>")
 - Questions awaiting an answer ("<specific user question>")
 - Decisions awaiting input ("<option A or B?>")
@@ -2004,14 +2013,14 @@ rare case where the last exchange was fully resolved and the user said
 something like "thanks, that's all".
 If multiple items are outstanding, list only the ones NOT yet completed.
 This historical snapshot must identify the latest unresolved user input precisely. Examples:
-"User asked: '<exact latest user request>'"
-"User asked: '<exact latest user question>' — needs investigation + answer"
+"User asked for <specific task and constraints>"
+"User asked <specific question> — needs investigation + answer"
 "User chose <option>; awaiting implementation of <specific next step>"
 If the user's most recent message was a reverse signal (stop, undo, roll
 back, never mind, just verify, change of topic) that supersedes earlier
-work, write the reverse signal verbatim and DO NOT carry forward the
-cancelled task. Example: "User asked: '<exact reverse signal>' — earlier
-in-flight work is cancelled."
+work, describe the reverse signal accurately and DO NOT carry forward the
+cancelled task.
+Example: "User asked to stop the prior task — earlier work is cancelled."
 If no outstanding task exists, write "None."]""",
         "goal": "[What the user is trying to accomplish overall]",
         "constraints": (
@@ -5299,11 +5308,16 @@ Write only the summary body. Do not include any preamble or prefix."""
         telemetry["failure_class"] = "summary_overload_degraded" if self._last_summary_overload_degraded else (
             telemetry.get("failure_class") or ("feasibility_skip" if feasibility_skip else "summary_generation_failed")
         )
-        return self._build_static_fallback_summary(
+        summary = self._build_static_fallback_summary(
             turns_to_summarize,
             # A stale error from an earlier failure must not be embedded in a feasibility-skip fallback.
             reason=None if feasibility_skip else self._last_summary_error,
         )
+        # The fallback row replaces the older handoff in the transcript, and the next compaction drops
+        # handoff rows from its window as "already folded into _previous_summary". Publish it like a
+        # real summary so its anchors reach the next summarizer instead of the stale in-memory one.
+        self._previous_summary = self._strip_summary_prefix(summary)
+        return summary
 
     def _assemble_tail(
         self, messages: List[Dict[str, Any]], compress_end: int, tail_start: int, summary_indices: set,
