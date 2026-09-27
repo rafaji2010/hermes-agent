@@ -209,6 +209,10 @@ dependencies = [
   # devices can still slip through; they get the same resolution failure as
   # before, worked around by installing with `--no-deps` or an older release.
   "nemo-relay>=0.8.3,<0.9; ((sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release) or (sys_platform == 'linux' and platform_machine == 'aarch64' and 'android' not in platform_release) or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')) and python_version >= '3.14'",
+  # Fork dependency (upstream dropped its direct pin; our `hermes publish` +
+  # workspace-plugin code imports `yaml` on every supported Python, so it must
+  # stay ungated like reportlab below rather than ride a 3.14 marker).
+  "pyyaml==6.0.3",
   # PDF export for `hermes publish` (reportlab PDF rendering of ADRs,
   # milestones, and journal entries). reportlab ships wheels for Linux,
   # macOS and Windows (the C extensions are optional — the PDF generator in
