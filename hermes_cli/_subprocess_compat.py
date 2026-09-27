@@ -13,12 +13,14 @@ import re
 import shutil
 import subprocess
 import sys
-from typing import Mapping, Sequence
+from pathlib import Path
+from typing import Mapping, NoReturn, Sequence
 
 __all__ = [
     "IS_WINDOWS",
     "resolve_node_command",
     "split_command_line",
+    "restore_ambient_pythonpath",
     "suppress_platform_ver_console",
     "windows_detach_flags",
     "windows_detach_flags_without_breakaway",
@@ -26,8 +28,11 @@ __all__ = [
     "windows_detach_popen_kwargs",
     "bounded_git_probe",
     "bounded_probe_run",
+    "selected_git_env",
+    "expose_pm_git",
     "noninteractive_git_env",
     "NO_DRIVER_DIFF_FLAGS",
+    "NO_LAZY_FETCH_ENV",
     "pid_is_hermes",
 ]
 
@@ -47,6 +52,13 @@ _DIFF_RENDERING_SUBCOMMANDS = frozenset({"diff", "show", "log", "blame"})
 # Options that consume the FOLLOWING token, so that value is never mistaken for the subcommand
 # (``-C diff`` is a path; ``-c diff=x`` is a config pair).
 _GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+
+
+def run(cmd, **kwargs) -> NoReturn:
+    # Shim to suppress old updater work until relaunch. Do not start its installer.
+    from hermes_cli._old_updater import stop_for_relaunch
+
+    stop_for_relaunch()
 
 
 def harden_git_argv(args: Sequence[str]) -> list[str]:
@@ -100,6 +112,34 @@ def split_command_line(line: str) -> list[str]:
             tok = tok[1:-1]
         out.append(tok)
     return out
+
+
+# -----------------------------------------------------------------------------
+# Node ecosystem launcher resolution
+# -----------------------------------------------------------------------------
+
+
+def restore_ambient_pythonpath(env: Mapping[str, str]) -> dict:
+    """Re-add the ambient ``PYTHONPATH`` to a child environment that a
+    ``build_subprocess_env``-style factory already built.
+
+    No-boot-through-venv: the boot interpreter is the pm STORE python, whose
+    imports arrive via ``PYTHONPATH=<repo>;<venv>/site-packages`` (it has no
+    editable install). The subprocess-env factories strip Hermes-owned
+    PYTHONPATH entries so agent-run children on DIFFERENT interpreter
+    versions never load the backend's C extensions — but a child that
+    re-execs THIS interpreter (``sys.executable -m hermes_cli.main``) runs
+    on the same version and needs those entries back. Prepending keeps the
+    launcher's repo-first ordering intact.
+    """
+    merged = dict(env)
+    ambient = os.environ.get("PYTHONPATH")
+    if ambient:
+        existing = merged.get("PYTHONPATH", "")
+        merged["PYTHONPATH"] = (
+            ambient + os.pathsep + existing if existing else ambient
+        )
+    return merged
 
 
 def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
@@ -211,6 +251,14 @@ def windows_detach_popen_kwargs() -> dict:
     return {"start_new_session": True}
 
 
+# Read-only probes must never lazy-fetch. In a partial (blobless/treeless) clone a missing object makes
+# git spawn ``git fetch`` from the promisor remote, and a probe's timeout kills only its own git: the
+# startup update check's ``merge-base --is-ancestor <fresh upstream tip>`` started a ~233k-object
+# history download on every launch that ran on orphaned, piling up partial packs. With this set the
+# probe fails fast on the missing object instead (git >= 2.44; older git ignores the variable).
+NO_LAZY_FETCH_ENV = {"GIT_NO_LAZY_FETCH": "1"}
+
+
 # GIT_CONFIG_KEY_n/VALUE_n overrides for internal git children: no credential/askpass prompts, no
 # repo-configured fsmonitor/hooks/pager/editor/external-diff programs.
 _GIT_CONFIG_INJECT_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
@@ -307,6 +355,51 @@ def _user_safe_directories(base_env: "Mapping[str, str]") -> list[str]:
         values.extend(records)
     _safe_directory_cache[cache_key] = list(values)
     return values
+
+
+def selected_git_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """PM's full Git environment, or the original base for system-Git fallback.
+
+    Keep lazy acquisition under PM's policy (not just installed-package lookup).
+    Unsupported targets and failed acquisition must not disable a working system
+    Git. Callers apply their own config/security isolation after selection.
+    """
+    env = dict(base if base is not None else os.environ)
+    try:
+        from pm import ensure
+
+        return ensure("git", base_env=env).env
+    except Exception:
+        return env
+
+
+def expose_pm_git(project_root: Path) -> None:
+    """Put PM's git on PATH, and in PM's facts, for a Windows git checkout.
+
+    install.ps1 stages the pinned Git for Windows into PM's store for its own
+    process only, and PM's facts never record it, so every later bare ``git``
+    (``hermes update``, the source-completion stamp, plugin installs, doctor)
+    died with ``[WinError 2]``. A git found under PM's store is that unrecorded
+    copy inherited from the installer, so it is recorded too. Callers are
+    explicit user actions (like ``ensure_tools_for_sync``), so acquire PM's git
+    outright; children inherit the PATH. The machine's own git, and a git-less
+    ZIP install that never runs git, are untouched. Raises what ``pm.ensure``
+    raises.
+    """
+    if sys.platform != "win32" or not (Path(project_root) / ".git").exists():
+        return
+    from hermes_platform.resolver import locate_command
+    from pm.paths import store_root
+
+    found = locate_command("git").command
+    if found and not Path(found[0]).resolve().is_relative_to(store_root()):
+        return
+    from pm import ensure
+
+    env = ensure("git", explicit=True).env
+    path = next((value for key, value in env.items() if key.upper() == "PATH"), None)
+    if path:
+        os.environ["PATH"] = path
 
 
 def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str, str]:
@@ -583,7 +676,7 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
     openai/codex#36793). ``process_group`` only changes which group the child belongs to; it does not detach
     the terminal or alter the fast path.
     """
-    result = bounded_probe_run(argv, timeout=timeout, env=noninteractive_git_env())
+    result = bounded_probe_run(argv, timeout=timeout, env={**noninteractive_git_env(), **NO_LAZY_FETCH_ENV})
     if result is None or result.returncode != 0:
         return ""
     return (result.stdout or "").strip()
