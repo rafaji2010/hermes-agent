@@ -18,10 +18,8 @@
  * re-derived. `nous-alt` is first-party — do not re-derive it from GitHub.
  */
 
-import type { HermesSkin } from '@hermes/shared/skin'
-
 import { THEME_PRESET_PALETTES } from '@hermes/shared'
-import { skinToDesktopTheme } from './skin'
+import type { HermesSkin } from '@hermes/shared/skin'
 
 import { skinToDesktopTheme } from './skin'
 import type { DesktopTheme, DesktopThemeTypography } from './types'
