@@ -58,7 +58,8 @@ def data_training_warning(
     model_name: str,
     *,
     provider: Optional[str] = None,
-    base_url: Optional[str] = None,  # noqa: ARG001 — reserved for host-scoped rules
+    # Reserved for host-scoped rules (e.g. third-party relays) — unused for now, on purpose.
+    base_url: Optional[str] = None,
     acknowledged: bool = False,
 ) -> Optional[DataTrainingWarning]:
     """Warning payload when *model_name* selects a data-training tier, else ``None`` (also ``None`` once

@@ -96,6 +96,7 @@ export const pt: Translations = {
   status: {
     actionFailed: "Ação falhou",
     actionFinished: "Concluído",
+    actionFinishedOwed: "Atualizado, mas ainda pendente (execute `hermes update` novamente para concluir)",
     actions: "Ações",
     agent: "Agente",
     activeSessions: "Sessões ativas",
@@ -163,6 +164,7 @@ export const pt: Translations = {
     deleteSelectedConfirmMessage:
       "Isto remove permanentemente {count} sessões selecionadas e todas as suas mensagens. Não pode ser desfeito.",
     selectedSessionsDeleted: "{count} sessões eliminadas",
+    selectedSessionsSkippedActive: "{deleted} eliminadas; {count} mantidas porque há um turno em curso",
     failedToDeleteSelected: "Falha ao eliminar as sessões selecionadas",
     resumeInChat: "Retomar no Chat",
     newChat: "Novo chat",
