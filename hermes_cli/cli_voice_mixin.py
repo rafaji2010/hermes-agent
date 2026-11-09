@@ -519,6 +519,8 @@ class CLIVoiceMixin:
         # See #19835.
         _cprint(f"\n{_ACCENT}{t('cli.voice.enabled', tts_status=tts_status)}{_RST}")
         _cprint(f"  {_DIM}{t('cli.voice.record_key_hint', shortcut=self._voice_record_key_label())}{_RST}")
+        if getattr(self, "_voice_space_hotkey_enabled", lambda: True)():
+            _cprint(f"  {_DIM}Space on an empty prompt starts recording too.{_RST}")
         # Spoken-stop hint from voice.stop_phrases (first entry); "" when disabled.
         try:
             from tools.voice_mode_transcript import voice_stop_hint

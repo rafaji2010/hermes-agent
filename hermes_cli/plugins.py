@@ -934,6 +934,21 @@ class PluginContext:
         """Register a lifecycle hook callback (unknown names warn but are still stored)."""
         return self._track_callback("hook", hook_name, callback, self._manager._hooks, VALID_HOOKS)
 
+    def register_status_segment(self, name: str, callback: Callable) -> PluginRegistration:
+        """Register one segment of the CLI status bar (the line under the prompt).
+
+        ``callback()`` runs on every status-bar render and returns ``(style, text)``, a
+        list of such fragments, or ``None`` when it has nothing to show. It must read
+        cached state only: a render must never wait on a command, a file read or a model
+        call, or every keystroke pays for it.
+        """
+        if not callable(callback):
+            raise TypeError("status segment callback must be callable")
+        clean = (name or "").strip().lower().replace(" ", "-") or "segment"
+        key = f"{self.plugin_id}:{clean}"
+        return self._track_callback(
+            "status_segment", key, callback, self._manager._status_segments, {key})
+
     def register_middleware(self, kind: str, callback: Callable) -> PluginRegistration:
         """Register behavior-changing middleware (request kinds rewrite the payload, execution kinds
         wrap the callback). Unknown kinds warn but are stored."""
@@ -1186,6 +1201,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._cli_commands: dict[str, dict] = {}
         self._plugin_commands: dict[str, dict] = {}
         self._system_prompt_sections: dict[str, PluginSystemPromptSection] = {}
+        # Status-bar segments (``ctx.register_status_segment``): "<plugin>:<name>" -> callbacks.
+        self._status_segments: dict[str, list[Callable]] = {}
         self._plugin_skills: dict[str, dict[str, Any]] = {}
         self._automation_blueprints: dict[str, Any] = {}  # "<plugin>:<key>" -> AutomationBlueprint
         self._portable_mcp_servers: dict[str, dict[str, Any]] = {}
@@ -1574,6 +1591,13 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
 
     def get_portable_mcp_server_plugins(self) -> dict[str, str]:
         return dict(self._portable_mcp_server_plugins)
+
+    def status_segments(self) -> list[Callable]:
+        """Plugin status-segment callbacks in registration order (read-only snapshot)."""
+        callbacks: list[Callable] = []
+        for registered in list(self._status_segments.values()):
+            callbacks.extend(registered)
+        return callbacks
 
     def remove_plugin_skill(self, qualified_name: str) -> None:
         """Remove a stale registry entry (silently ignores missing keys)."""

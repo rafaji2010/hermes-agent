@@ -155,6 +155,10 @@ This loop continues until you press **Ctrl+B** during recording (exits continuou
 
 :::tip
 The record key is configurable via `voice.record_key` in `~/.hermes/config.yaml` (default: `ctrl+b`).
+
+**Space to speak:** pressing the space bar on an **empty** prompt starts recording too (and
+stops it while recording), so `space → speak → send` needs no chord. A space inside a draft
+always types normally. Set `voice.space_hotkey: false` to remove the shortcut.
 :::
 
 ### Silence Detection

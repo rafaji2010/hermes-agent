@@ -682,3 +682,61 @@ class TestFallbackSpeakArmsBargeMonitor:
         assert not cli._monitor_armed.wait(0.05)
         assert cli._monitor_calls == []
 
+
+
+# ============================================================================
+# Space push-to-talk: only an empty composer is claimed
+# ============================================================================
+
+class TestSpaceVoiceHotkey:
+    def _event(self, text=""):
+        return SimpleNamespace(current_buffer=SimpleNamespace(text=text, insert_text=MagicMock()))
+
+    def test_space_on_empty_composer_toggles_recording(self):
+        cli = _make_voice_cli(_voice_mode=True)
+        cli._tui_handle_voice_record = MagicMock()
+        event = self._event("")
+        cli._tui_handle_space_voice(event)
+        cli._tui_handle_voice_record.assert_called_once_with(event)
+
+    def test_space_inside_a_draft_types_normally(self):
+        cli = _make_voice_cli(_voice_mode=True)
+        cli._tui_handle_voice_record = MagicMock()
+        event = self._event("hello")
+        cli._tui_handle_space_voice(event)
+        event.current_buffer.insert_text.assert_called_once_with(" ")
+        cli._tui_handle_voice_record.assert_not_called()
+
+    def test_first_space_enables_voice_mode(self):
+        cli = _make_voice_cli(_voice_mode=False)
+        cli._enable_voice_mode = MagicMock(side_effect=lambda: setattr(cli, "_voice_mode", True))
+        cli._tui_handle_voice_record = MagicMock()
+        event = self._event("")
+        cli._tui_handle_space_voice(event)
+        cli._enable_voice_mode.assert_called_once()
+        cli._tui_handle_voice_record.assert_called_once_with(event)
+
+    def test_space_does_nothing_when_requirements_still_missing(self):
+        cli = _make_voice_cli(_voice_mode=False)
+        cli._enable_voice_mode = MagicMock()  # leaves _voice_mode False
+        cli._tui_handle_voice_record = MagicMock()
+        cli._tui_handle_space_voice(self._event(""))
+        cli._tui_handle_voice_record.assert_not_called()
+
+    def test_whitespace_only_composer_counts_as_empty(self):
+        cli = _make_voice_cli(_voice_mode=True)
+        cli._tui_handle_voice_record = MagicMock()
+        cli._tui_handle_space_voice(self._event("   "))
+        cli._tui_handle_voice_record.assert_called_once()
+
+    @pytest.mark.parametrize("cfg,expected", [
+        ({"voice": {"space_hotkey": False}}, False),
+        ({"voice": {"space_hotkey": True}}, True),
+        ({"voice": None}, True),
+        ({}, True),
+    ])
+    def test_config_switch(self, cfg, expected, monkeypatch):
+        import hermes_cli.config as config_mod
+        monkeypatch.setattr(config_mod, "load_config", lambda: cfg)
+        cli = _make_voice_cli()
+        assert cli._voice_space_hotkey_enabled() is expected

@@ -1103,6 +1103,30 @@ class CLIStatusBarMixin:
             total_tokens = snapshot.get("session_total_tokens", 0)
             if total_tokens and field_set is not None and "total_tokens" in field_set:
                 segs.append([(_DIM, f"Σ{format_token_count_compact(total_tokens)}")])
+        # Plugin segments (ctx.register_status_segment) close the line. They read cached
+        # state only: a render must never wait on a process, a file or a model call.
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            for callback in get_plugin_manager().status_segments():
+                try:
+                    value = callback()
+                except Exception:
+                    continue
+                if not value:
+                    continue
+                if isinstance(value, str):
+                    value = [("", value)]
+                frags = []
+                for item in value:
+                    if not isinstance(item, (tuple, list)) or len(item) != 2:
+                        continue
+                    style, text = item
+                    if text:
+                        frags.append((str(style or ""), str(text)))
+                if frags:
+                    segs.append(frags)
+        except Exception:
+            pass
         return segs
 
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:

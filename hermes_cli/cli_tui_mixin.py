@@ -841,6 +841,41 @@ class CLITuiMixin:
         except Exception:
             return []
 
+    def _voice_space_hotkey_enabled(self) -> bool:
+        """``voice.space_hotkey`` (default true): space on an empty composer toggles recording.
+
+        Read when the prompt_toolkit bindings are built. A malformed ``voice:`` section falls
+        back to the documented default instead of raising during key-binding setup.
+        """
+        try:
+            from hermes_cli.config import load_config
+            voice = load_config().get("voice")
+            if isinstance(voice, dict) and voice.get("space_hotkey") is False:
+                return False
+        except Exception:
+            pass
+        return True
+
+    def _tui_handle_space_voice(self, event):
+        """Space on an empty composer: start (or stop) a voice recording.
+
+        A space inside a draft must keep typing normally, so the shortcut is only taken when
+        the composer is empty (whitespace-only counts as empty). When voice mode is off, the
+        first press enables it — the same checks and the same missing-requirement message
+        `/voice` prints — so dictating a prompt costs one key instead of a command first.
+        """
+        buffer = event.current_buffer
+        if (buffer.text or "").strip():
+            buffer.insert_text(" ")
+            return
+        if not self._voice_mode:
+            enable = getattr(self, "_enable_voice_mode", None)
+            if callable(enable):
+                enable()
+            if not self._voice_mode:
+                return
+        self._tui_handle_voice_record(event)
+
     def _tui_handle_voice_record(self, event):
         """Toggle voice recording when voice mode is active.
 
@@ -1961,6 +1996,11 @@ class CLITuiMixin:
         kb.add('c-z')(self._tui_handle_ctrl_z)
 
         kb.add(*self._tui_voice_record_key_sequence())(self._tui_handle_voice_record)
+        # Push-to-talk prime: a bare space on an EMPTY composer toggles recording, so
+        # "space, speak, send" needs no chord. Inside a draft the same binding types the
+        # space, and `voice.space_hotkey: false` removes the shortcut entirely.
+        if self._voice_space_hotkey_enabled():
+            kb.add(' ', filter=_normal_input)(self._tui_handle_space_voice)
         kb.add(Keys.BracketedPaste, eager=True)(self._tui_handle_paste)
         kb.add('c-v')(self._tui_handle_ctrl_v)
         kb.add('escape', 'v')(self._tui_handle_alt_v)

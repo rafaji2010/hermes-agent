@@ -1226,6 +1226,9 @@ DEFAULT_CONFIG = {
             # optional "api_key" / "base_url" keys override the OpenAI audio credentials for this mode only
         },
         "record_key": "ctrl+b",
+        # Space on an EMPTY composer toggles recording too (space_hotkey: false disables it;
+        # space inside a draft always types normally).
+        "space_hotkey": True,
         "submit_mode": "direct",  # TUI: direct submits immediately; draft = editable transcript
         "max_recording_seconds": 120,
         "auto_tts": False,
