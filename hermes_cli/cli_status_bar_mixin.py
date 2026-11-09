@@ -1154,6 +1154,36 @@ class CLIStatusBarMixin:
         except Exception:
             return f"☤ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
+    def _plugin_band_callbacks(self) -> list:
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            return get_plugin_manager().status_bands()
+        except Exception:
+            return []
+
+    def _has_plugin_band(self) -> bool:
+        return bool(self._plugin_band_callbacks())
+
+    def _get_plugin_band_fragments(self):
+        """Fragments for the plugin band line above the status bar (state only)."""
+        frags: list = []
+        for callback in self._plugin_band_callbacks():
+            try:
+                value = callback()
+            except Exception:
+                continue
+            if not value:
+                continue
+            if isinstance(value, str):
+                value = [(_DIM, value)]
+            parts = [(str(style or ""), str(text)) for style, text in value if text]
+            if not parts:
+                continue
+            if frags:
+                frags.append((_DIM, " │ "))
+            frags.extend(parts)
+        return frags
+
     def _get_status_bar_fragments(self):
         if (
             not self._status_bar_visible

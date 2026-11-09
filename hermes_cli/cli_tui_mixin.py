@@ -412,7 +412,8 @@ class CLITuiMixin:
         input_area,
         input_rule_bot,
         voice_status_bar,
-        completions_menu) -> list:
+        completions_menu,
+        plugin_band=None) -> list:
         """Ordered children of the root ``HSplit``; override only for full control over ordering
         (wrappers normally override ``_get_extra_tui_widgets`` instead)."""
         ordered = [
@@ -431,6 +432,7 @@ class CLITuiMixin:
             getattr(self, "_pet_widget", None),
             getattr(self, "_stash_panel_widget", None),
             getattr(self, "_subagent_dock_widget", None),
+            plugin_band,
             status_bar,
             input_rule_top,
             image_bar,
@@ -2225,6 +2227,10 @@ class CLITuiMixin:
             filter=Condition(
                 lambda: cli_ref._status_bar_visible
                 and not getattr(cli_ref, "_status_bar_suppressed_after_resize", False)))
+        plugin_band = ConditionalContainer(
+            Window(FormattedTextControl(lambda: cli_ref._get_plugin_band_fragments()),
+                   height=1, wrap_lines=False),
+            filter=Condition(lambda: cli_ref._has_plugin_band()))
         # Stash browse panel — just above the status bar, Ctrl+S on an empty composer with 2+ drafts.
         self._stash_panel_widget = ConditionalContainer(
             Window(FormattedTextControl(self._get_stash_panel_display_fragments), wrap_lines=False),
@@ -2248,6 +2254,7 @@ class CLITuiMixin:
             input_area=input_area,
             input_rule_bot=input_rule_bot,
             voice_status_bar=voice_status_bar,
+            plugin_band=plugin_band,
             completions_menu=CompletionsMenu(max_height=12, scroll_offset=1))))
         self._tui_set_base_style()
         return layout, PTStyle.from_dict(self._build_tui_style_dict())

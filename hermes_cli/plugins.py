@@ -949,6 +949,20 @@ class PluginContext:
         return self._track_callback(
             "status_segment", key, callback, self._manager._status_segments, {key})
 
+    def register_status_band(self, name: str, callback: Callable) -> PluginRegistration:
+        """Register a full-width band rendered on its own line above the status bar.
+
+        ``callback()`` runs on every render and returns ``(style, text)`` fragments (or a
+        list) from cached state, or ``None`` to hide the band. Like a status segment it
+        must not run a command, read a file, call a model or call Jev.
+        """
+        if not callable(callback):
+            raise TypeError("status band callback must be callable")
+        clean = (name or "").strip().lower().replace(" ", "-") or "band"
+        key = f"{self.plugin_id}:{clean}"
+        return self._track_callback(
+            "status_band", key, callback, self._manager._status_bands, {key})
+
     def register_middleware(self, kind: str, callback: Callable) -> PluginRegistration:
         """Register behavior-changing middleware (request kinds rewrite the payload, execution kinds
         wrap the callback). Unknown kinds warn but are stored."""
@@ -1203,6 +1217,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._system_prompt_sections: dict[str, PluginSystemPromptSection] = {}
         # Status-bar segments (``ctx.register_status_segment``): "<plugin>:<name>" -> callbacks.
         self._status_segments: dict[str, list[Callable]] = {}
+        # Full-width bands above the status bar (``ctx.register_status_band``).
+        self._status_bands: dict[str, list[Callable]] = {}
         self._plugin_skills: dict[str, dict[str, Any]] = {}
         self._automation_blueprints: dict[str, Any] = {}  # "<plugin>:<key>" -> AutomationBlueprint
         self._portable_mcp_servers: dict[str, dict[str, Any]] = {}
@@ -1596,6 +1612,13 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         """Plugin status-segment callbacks in registration order (read-only snapshot)."""
         callbacks: list[Callable] = []
         for registered in list(self._status_segments.values()):
+            callbacks.extend(registered)
+        return callbacks
+
+    def status_bands(self) -> list[Callable]:
+        """Plugin full-width band callbacks in registration order (read-only snapshot)."""
+        callbacks: list[Callable] = []
+        for registered in list(self._status_bands.values()):
             callbacks.extend(registered)
         return callbacks
 
