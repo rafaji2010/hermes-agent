@@ -698,6 +698,8 @@ class TestSpaceVoiceHotkey:
         event = self._event("")
         cli._tui_handle_space_voice(event)
         cli._tui_handle_voice_record.assert_called_once_with(event)
+        # One-shot: unlike Ctrl+B, space must not leave the continuous loop armed.
+        assert cli._voice_continuous is False
 
     def test_space_inside_a_draft_types_normally(self):
         cli = _make_voice_cli(_voice_mode=True)

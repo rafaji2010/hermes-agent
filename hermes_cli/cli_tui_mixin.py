@@ -857,12 +857,13 @@ class CLITuiMixin:
         return True
 
     def _tui_handle_space_voice(self, event):
-        """Space on an empty composer: start (or stop) a voice recording.
+        """Space on an empty composer: dictate one prompt, then stop.
 
         A space inside a draft must keep typing normally, so the shortcut is only taken when
         the composer is empty (whitespace-only counts as empty). When voice mode is off, the
         first press enables it — the same checks and the same missing-requirement message
         `/voice` prints — so dictating a prompt costs one key instead of a command first.
+        Unlike Ctrl+B this is one-shot: the recording does not auto-restart afterwards.
         """
         buffer = event.current_buffer
         if (buffer.text or "").strip():
@@ -875,6 +876,11 @@ class CLITuiMixin:
             if not self._voice_mode:
                 return
         self._tui_handle_voice_record(event)
+        # One-shot dictation: space is for a prompt, not a spoken conversation. Ctrl+B
+        # keeps the continuous voice-chat loop; clearing the flag here stops the recording
+        # from auto-restarting after the transcript is submitted.
+        with self._voice_lock:
+            self._voice_continuous = False
 
     def _tui_handle_voice_record(self, event):
         """Toggle voice recording when voice mode is active.
